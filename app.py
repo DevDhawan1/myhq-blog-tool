@@ -3,15 +3,18 @@ import json
 import os
 from datetime import datetime
 
-from dotenv import load_dotenv
-
 from scraper import build_context, load_context
 from generator import setup_gemini, generate_blog
 from image_generator import generate_ai_image, get_unsplash_image
 from docx_exporter import build_docx
 
-# Load .env from the same folder as this script, regardless of where you run from
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
+
+def _secret(key: str) -> str:
+    """Read from st.secrets (Streamlit Cloud) then fall back to os.environ."""
+    try:
+        return st.secrets.get(key, os.environ.get(key, ""))
+    except Exception:
+        return os.environ.get(key, "")
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -46,7 +49,7 @@ with st.sidebar:
 
     api_key = st.text_input(
         "Gemini API Key  *(required)*",
-        value=os.getenv("GEMINI_API_KEY", ""),
+        value=_secret("GEMINI_API_KEY"),
         type="password",
         help="Free from aistudio.google.com → Sign in → Get API Key",
     )
@@ -55,7 +58,7 @@ with st.sidebar:
 
     hf_token = st.text_input(
         "Hugging Face Token  *(AI image generation)*",
-        value=os.getenv("HF_TOKEN", ""),
+        value=_secret("HF_TOKEN"),
         type="password",
         help="Free from huggingface.co → Settings → Access Tokens. Uses FLUX.1-schnell.",
     )
@@ -64,7 +67,7 @@ with st.sidebar:
 
     unsplash_key = st.text_input(
         "Unsplash Key  *(fallback if no HF token)*",
-        value=os.getenv("UNSPLASH_ACCESS_KEY", ""),
+        value=_secret("UNSPLASH_ACCESS_KEY"),
         type="password",
         help="Free from unsplash.com/developers — used only if HF token is not set.",
     )
