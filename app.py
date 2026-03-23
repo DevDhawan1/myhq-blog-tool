@@ -89,7 +89,7 @@ with st.sidebar:
         st.warning("Context not loaded. Click Refresh below.")
 
     if st.button("🔄 Refresh Context", use_container_width=True,
-                 help="Re-scrapes all of myhqblog.in (~3–5 min for 160+ blogs)"):
+                 help="Re-scrapes all of myhqblog.in (~3–5 min for 200+ blogs)"):
         prog = st.progress(0)
         status = st.empty()
 
