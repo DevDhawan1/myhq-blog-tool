@@ -11,7 +11,7 @@ from image_generator import generate_ai_image, get_unsplash_image
 from docx_exporter import build_docx
 
 # Load .env from the same folder as this script, regardless of where you run from
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "/.env"))
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
