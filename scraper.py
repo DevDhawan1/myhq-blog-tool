@@ -8,37 +8,43 @@ from collections import Counter
 from datetime import datetime
 import time
 
-SITEMAP_URL = "https://myhqblog.in/sitemap-1.xml"
+BLOG_BASE   = "https://myhqblog.in"
 MYHQ_BASE   = "https://myhq.in"
 BLOG_PREFIX = "/blog/"
 CACHE_FILE  = "context_cache.json"
-MAX_BLOGS   = 300  # raise if blog count grows beyond this
+MAX_BLOGS   = 1000  # hard ceiling; raise if needed
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
 
+SITEMAP_URL = f"{BLOG_BASE}/sitemap-1.xml"
+BLOG_URL_PREFIX = f"{BLOG_BASE}{BLOG_PREFIX}"  # https://myhqblog.in/blog/
+
 
 # ── Sitemap ───────────────────────────────────────────────────────────────────
 
-def fetch_sitemap(url=SITEMAP_URL):
+def fetch_sitemap() -> list[str]:
     """
-    Fetches the sitemap XML from myhqblog.in, extracts paths,
-    and returns full myhq.in/blog/... URLs.
-    Handles both absolute and relative paths in the sitemap.
+    Fetches sitemap-1.xml and returns only URLs that start with
+    https://myhqblog.in/blog/ — nothing else is included.
     """
-    resp = requests.get(url, headers=HEADERS, timeout=15)
+    resp = requests.get(SITEMAP_URL, headers=HEADERS, timeout=15)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.content, "lxml-xml")
 
-    blog_urls = []
+    urls = []
     for loc in soup.find_all("loc"):
         raw = loc.text.strip()
-        path = urlparse(raw).path          # strip domain, keep path
-        if path.startswith(BLOG_PREFIX):
-            blog_urls.append(MYHQ_BASE + path)
+        # Normalise relative paths to absolute
+        if raw.startswith("/"):
+            raw = BLOG_BASE + raw
+        if raw.startswith(BLOG_URL_PREFIX):
+            urls.append(raw)
 
-    return blog_urls[:MAX_BLOGS]
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    return [u for u in urls if not (u in seen or seen.add(u))][:MAX_BLOGS]
 
 
 # ── Single-page scraper ───────────────────────────────────────────────────────
@@ -142,9 +148,10 @@ def build_context(progress_callback=None):
             time.sleep(0.3)
             continue
 
-        # Store blog entry
+        # Store blog entry — convert myhqblog.in scrape URL to myhq.in for internal linking
+        canonical_url = data["url"].replace(BLOG_BASE, MYHQ_BASE)
         blogs.append({
-            "url":        data["url"],
+            "url":        canonical_url,
             "slug":       data["slug"],
             "title":      data["h1_title"] or data["meta_title"],
             "meta_title": data["meta_title"],

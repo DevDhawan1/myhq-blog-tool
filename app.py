@@ -2,19 +2,23 @@ import streamlit as st
 import json
 import os
 from datetime import datetime
+# Read .env manually — no library dependency, works regardless of CWD or encoding
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+if os.path.exists(_env_path):
+    with open(_env_path, encoding="utf-8") as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _v = _line.split("=", 1)
+                _k, _v = _k.strip(), _v.strip()
+                if _k and _v:
+                    os.environ[_k] = _v
 
 from scraper import build_context, load_context
 from generator import setup_gemini, generate_blog
-from image_generator import generate_ai_image, get_unsplash_image
+from image_generator import generate_blog_image, get_unsplash_image
 from docx_exporter import build_docx
 
-
-def _secret(key: str) -> str:
-    """Read from st.secrets (Streamlit Cloud) then fall back to os.environ."""
-    try:
-        return st.secrets.get(key, os.environ.get(key, ""))
-    except Exception:
-        return os.environ.get(key, "")
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -34,6 +38,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     try:
@@ -49,28 +54,21 @@ with st.sidebar:
 
     api_key = st.text_input(
         "Gemini API Key  *(required)*",
-        value=_secret("GEMINI_API_KEY"),
+        value=st.session_state.get("gemini_api_key", os.environ.get("GEMINI_API_KEY", "")),
         type="password",
         help="Free from aistudio.google.com → Sign in → Get API Key",
     )
+    st.session_state["gemini_api_key"] = api_key
     if api_key:
         os.environ["GEMINI_API_KEY"] = api_key
 
-    hf_token = st.text_input(
-        "Hugging Face Token  *(AI image generation)*",
-        value=_secret("HF_TOKEN"),
-        type="password",
-        help="Free from huggingface.co → Settings → Access Tokens. Uses FLUX.1-schnell.",
-    )
-    if hf_token:
-        os.environ["HF_TOKEN"] = hf_token
-
     unsplash_key = st.text_input(
-        "Unsplash Key  *(fallback if no HF token)*",
-        value=_secret("UNSPLASH_ACCESS_KEY"),
+        "Unsplash Key  *(fallback stock photos)*",
+        value=st.session_state.get("unsplash_key", os.environ.get("UNSPLASH_ACCESS_KEY", "")),
         type="password",
-        help="Free from unsplash.com/developers — used only if HF token is not set.",
+        help="Free from unsplash.com/developers — used as fallback if Imagen fails.",
     )
+    st.session_state["unsplash_key"] = unsplash_key
     if unsplash_key:
         os.environ["UNSPLASH_ACCESS_KEY"] = unsplash_key
 
@@ -208,23 +206,22 @@ with tcol:
 
 # ── Feature image ──────────────────────────────────────────────────────────────
 st.markdown("#### Feature Image")
-img_prompt  = result.get("image_prompt", topic)
-hf_token    = os.environ.get("HF_TOKEN", "")
+img_prompt   = result.get("image_prompt", topic)
 unsplash_key = os.environ.get("UNSPLASH_ACCESS_KEY", "")
 
 if st.session_state.get("img_bytes") is None:
-    if hf_token:
-        with st.spinner("Generating AI image with FLUX… (20–40 sec)"):
-            try:
-                img_bytes = generate_ai_image(img_prompt, hf_token)
-                st.session_state["img_bytes"] = img_bytes
-                st.session_state["img_url"]   = ""
-                st.session_state["img_credit"] = ""
-            except Exception as e:
-                st.warning(f"FLUX generation failed: {e}. Falling back to Unsplash.")
-                st.session_state["img_bytes"] = b""
+    blog_title = result.get("blog_title", topic)
+    with st.spinner("Generating feature image… (20–40 sec)"):
+        try:
+            img_bytes = generate_blog_image(img_prompt, blog_title)
+            st.session_state["img_bytes"]  = img_bytes
+            st.session_state["img_url"]    = ""
+            st.session_state["img_credit"] = "Generated with Pollinations.ai · Flux Realism"
+        except Exception as e:
+            st.warning(f"Image generation failed: {e}. Falling back to Unsplash.")
+            st.session_state["img_bytes"] = b""
 
-    if not hf_token or not st.session_state.get("img_bytes"):
+    if not st.session_state.get("img_bytes"):
         if unsplash_key:
             with st.spinner("Fetching image from Unsplash…"):
                 img_url, img_credit = get_unsplash_image(img_prompt, unsplash_key)
@@ -255,7 +252,7 @@ elif img_url:
     if img_credit:
         st.caption(img_credit)
 else:
-    st.info("Add a Hugging Face token (AI images) or Unsplash key (stock photos) in the sidebar.")
+    st.info("Image generation failed. Add an Unsplash key in the sidebar as a fallback.")
 
 with st.expander("Image details"):
     st.caption(f"Prompt: {img_prompt}")

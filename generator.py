@@ -104,7 +104,8 @@ Rules:
 - Money page URLs must be in the format: https://myhq.in/... (not /blog/)
 - MONEY PAGE LINKS: Place at least one money page link naturally within the first two paragraphs of the content
 - TABLE: If the topic suits a comparison, feature list, or pricing overview, include one HTML <table> with <thead> and <tbody> in the second major H2 section of the blog
-- FAQs: End the blog with an H2 "Frequently Asked Questions" section containing exactly 5 FAQs as <h3> questions with <p> answers. Questions must be specific, high-quality, and directly relevant to the topic — not generic. Answers should be 2-3 sentences each."""
+- FAQs: End the blog with an H2 "Frequently Asked Questions" section containing exactly 5 FAQs as <h3> questions with <p> answers. Questions must be specific, high-quality, and directly relevant to the topic — not generic. Answers should be 2-3 sentences each.
+- WRITING STYLE — STRICT: Use short, punchy sentences (max 20 words each). Break ideas across multiple short sentences rather than joining with commas or conjunctions. Paragraphs must be 2-4 sentences maximum — never longer. Avoid run-on sentences, compound clauses, and long lists crammed into a single sentence. Write like a fast-moving blog, not an essay."""
 
 
 def generate_blog(model, topic, word_count, keyword_density, n_internal, n_money,

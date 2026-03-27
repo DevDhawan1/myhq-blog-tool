@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//tmp/**)",
+      "Bash(curl -sL -w \"\\\\n===STATUS:%{http_code}|CT:%{content_type}===\" \"https://myhqblog.in/post-sitemap.xml\")"
+    ]
+  }
+}

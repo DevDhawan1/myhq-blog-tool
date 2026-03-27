@@ -39,8 +39,8 @@ def _parse_html_to_doc(doc: Document, html: str):
     Simple HTML → docx parser. Handles h2, h3, p, ul/li, a tags.
     Strips remaining tags and writes plain paragraphs.
     """
-    # Split on block-level tags
-    blocks = re.split(r'(<h[23][^>]*>.*?</h[23]>|<p[^>]*>.*?</p>|<ul[^>]*>.*?</ul>)', html, flags=re.DOTALL)
+    # Split on block-level tags (including tables)
+    blocks = re.split(r'(<h[23][^>]*>.*?</h[23]>|<p[^>]*>.*?</p>|<ul[^>]*>.*?</ul>|<table[^>]*>.*?</table>)', html, flags=re.DOTALL)
 
     for block in blocks:
         block = block.strip()
@@ -93,6 +93,30 @@ def _parse_html_to_doc(doc: Document, html: str):
                     text = re.sub(r'<[^>]+>', '', part)
                     if text.strip():
                         para.add_run(text)
+            continue
+
+        # Table
+        m = re.match(r'<table[^>]*>(.*?)</table>', block, re.DOTALL)
+        if m:
+            rows_html = re.findall(r'<tr[^>]*>(.*?)</tr>', m.group(1), re.DOTALL)
+            parsed_rows = []
+            max_cols = 0
+            for row_html in rows_html:
+                cells = re.findall(r'<t[hd][^>]*>(.*?)</t[hd]>', row_html, re.DOTALL)
+                cell_texts = [re.sub(r'<[^>]+>', '', c).strip() for c in cells]
+                parsed_rows.append(cell_texts)
+                max_cols = max(max_cols, len(cell_texts))
+            if parsed_rows and max_cols > 0:
+                tbl = doc.add_table(rows=len(parsed_rows), cols=max_cols)
+                tbl.style = "Table Grid"
+                for r_idx, row_data in enumerate(parsed_rows):
+                    for c_idx in range(max_cols):
+                        cell_text = row_data[c_idx] if c_idx < len(row_data) else ""
+                        tbl.cell(r_idx, c_idx).text = cell_text
+                        if r_idx == 0:  # bold header row
+                            for run in tbl.cell(r_idx, c_idx).paragraphs[0].runs:
+                                run.font.bold = True
+                doc.add_paragraph()
             continue
 
         # Fallback: strip all tags and add as plain paragraph
