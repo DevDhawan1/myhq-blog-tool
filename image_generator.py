@@ -9,6 +9,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 POLLINATIONS_BASE = "https://image.pollinations.ai/prompt"
 UNSPLASH_BASE = "https://api.unsplash.com/photos/random"
+FREE_IMAGE_API_URL = "https://free-image-generator-api.devanshdhawan8943.workers.dev"
 
 # Font search paths — Windows first, then Linux/Mac (Streamlit Cloud)
 _FONT_PATHS = [
@@ -36,8 +37,36 @@ def _get_font(size: int) -> ImageFont.FreeTypeFont:
         return ImageFont.load_default()
 
 
+def _fetch_custom_api(prompt: str, api_url: str, api_key: str) -> bytes:
+    """Fetch image bytes from the self-hosted free-image-generator-api (Cloudflare Worker)."""
+    clean_prompt = (
+        f"{prompt}. Photorealistic professional photography, "
+        "sharp focus, high resolution, cinematic lighting, no text, no watermarks"
+    )
+    resp = requests.post(
+        api_url.rstrip("/"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={"prompt": clean_prompt},
+        timeout=90,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"Custom image API returned {resp.status_code}: {resp.text[:200]}")
+
+    content = resp.content
+    # Validate we got image bytes (JPEG or PNG)
+    magic = content[:4]
+    if magic not in (b'\xff\xd8\xff\xe0', b'\xff\xd8\xff\xe1', b'\xff\xd8\xff\xdb',
+                     b'\x89PNG', b'RIFF'):
+        raise RuntimeError("Custom image API returned non-image data")
+
+    return content
+
+
 def _fetch_pollinations(prompt: str) -> bytes:
-    """Download a 1280×720 background image from Pollinations.ai (free, no key)."""
+    """Fallback: download a 1280×720 background image from Pollinations.ai (free, no key)."""
     clean_prompt = (
         f"{prompt}. Photorealistic professional photography, "
         "sharp focus, high resolution, cinematic lighting, no text, no watermarks"
@@ -103,20 +132,39 @@ def _add_title_overlay(img_bytes: bytes, title: str) -> bytes:
     return buf.read()
 
 
-def generate_blog_image(image_prompt: str, blog_title: str) -> bytes:
+def generate_blog_image(
+    image_prompt: str,
+    blog_title: str,
+    api_url: str = "",
+    api_key: str = "",
+) -> bytes:
     """
-    Generate a blog feature image:
-      1. Fetch a relevant background from Pollinations.ai (free, no key needed)
-      2. Overlay the blog title as styled white text with a dark gradient banner
+    Generate a blog feature image with a dark gradient banner and title text overlay.
+
+    Priority:
+      1. Self-hosted free-image-generator-api (Cloudflare Worker) — if api_url and api_key set
+      2. Pollinations.ai (free, no key) — fallback
+
     Returns PNG bytes.
     """
+    api_url = api_url or os.environ.get("FREE_IMAGE_API_URL", FREE_IMAGE_API_URL)
+    api_key = api_key or os.environ.get("FREE_IMAGE_API_KEY", "")
+
+    if api_url and api_key:
+        try:
+            bg_bytes = _fetch_custom_api(image_prompt, api_url, api_key)
+            return _add_title_overlay(bg_bytes, blog_title)
+        except Exception as e:
+            # Log and fall through to Pollinations
+            print(f"[image_generator] Custom API failed ({e}), falling back to Pollinations")
+
     bg_bytes = _fetch_pollinations(image_prompt)
     return _add_title_overlay(bg_bytes, blog_title)
 
 
 def get_unsplash_image(prompt: str, access_key: str) -> tuple[str, str]:
     """
-    Fallback: fetch a relevant stock photo from Unsplash.
+    Last-resort fallback: fetch a relevant stock photo from Unsplash.
     Returns (image_url, credit_string).
     """
     query = prompt[:80].split(".")[0].strip()

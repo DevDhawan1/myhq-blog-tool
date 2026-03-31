@@ -18,6 +18,7 @@ from scraper import build_context, load_context
 from generator import setup_gemini, generate_blog
 from image_generator import generate_blog_image, get_unsplash_image
 from docx_exporter import build_docx
+from wordpress_publisher import upload_media, create_post
 
 
 # ── Page config ──────────────────────────────────────────────────────────────
@@ -62,15 +63,59 @@ with st.sidebar:
     if api_key:
         os.environ["GEMINI_API_KEY"] = api_key
 
+    free_image_api_key = st.text_input(
+        "Image API Key  *(primary)*",
+        value=st.session_state.get("free_image_api_key", os.environ.get("FREE_IMAGE_API_KEY", "")),
+        type="password",
+        help="Bearer token for the free-image-generator-api Cloudflare Worker.",
+    )
+    st.session_state["free_image_api_key"] = free_image_api_key
+    if free_image_api_key:
+        os.environ["FREE_IMAGE_API_KEY"] = free_image_api_key
+
     unsplash_key = st.text_input(
-        "Unsplash Key  *(fallback stock photos)*",
+        "Unsplash Key  *(last-resort fallback)*",
         value=st.session_state.get("unsplash_key", os.environ.get("UNSPLASH_ACCESS_KEY", "")),
         type="password",
-        help="Free from unsplash.com/developers — used as fallback if Imagen fails.",
+        help="Free from unsplash.com/developers — used only if both image APIs fail.",
     )
     st.session_state["unsplash_key"] = unsplash_key
     if unsplash_key:
         os.environ["UNSPLASH_ACCESS_KEY"] = unsplash_key
+
+    st.divider()
+
+    # ── WordPress credentials section ─────────────────────────────────────────
+    st.subheader("WordPress")
+    st.caption("Optional — required only to publish directly to WP.")
+
+    wp_site_url = st.text_input(
+        "WP Site URL",
+        value=st.session_state.get("wp_site_url", os.environ.get("WP_SITE_URL", "")),
+        placeholder="https://myhqblog.in",
+        help="Your WordPress site root URL (no trailing slash).",
+    )
+    st.session_state["wp_site_url"] = wp_site_url
+    if wp_site_url:
+        os.environ["WP_SITE_URL"] = wp_site_url
+
+    wp_username = st.text_input(
+        "WP Username",
+        value=st.session_state.get("wp_username", os.environ.get("WP_USERNAME", "")),
+    )
+    st.session_state["wp_username"] = wp_username
+    if wp_username:
+        os.environ["WP_USERNAME"] = wp_username
+
+    wp_app_password = st.text_input(
+        "WP Application Password",
+        value=st.session_state.get("wp_app_password", os.environ.get("WP_APP_PASSWORD", "")),
+        type="password",
+        help="Generate at WP Admin → Users → Profile → Application Passwords.",
+    )
+    st.session_state["wp_app_password"] = wp_app_password
+    if wp_app_password:
+        os.environ["WP_APP_PASSWORD"] = wp_app_password
 
     st.divider()
 
@@ -187,6 +232,7 @@ if submitted:
             st.session_state["img_bytes"] = None   # reset image cache on new generation
             st.session_state["img_url"] = None
             st.session_state["img_credit"] = None
+            st.session_state["wp_publish_result"] = None  # reset publish state on new generation
         except Exception as e:
             st.error(f"Generation error: {e}")
             st.stop()
@@ -211,12 +257,14 @@ unsplash_key = os.environ.get("UNSPLASH_ACCESS_KEY", "")
 
 if st.session_state.get("img_bytes") is None:
     blog_title = result.get("blog_title", topic)
+    _api_key = os.environ.get("FREE_IMAGE_API_KEY", "")
     with st.spinner("Generating feature image… (20–40 sec)"):
         try:
-            img_bytes = generate_blog_image(img_prompt, blog_title)
+            img_bytes = generate_blog_image(img_prompt, blog_title, api_key=_api_key)
             st.session_state["img_bytes"]  = img_bytes
             st.session_state["img_url"]    = ""
-            st.session_state["img_credit"] = "Generated with Pollinations.ai · Flux Realism"
+            credit = "Generated with free-image-generator-api" if _api_key else "Generated with Pollinations.ai · Flux Realism"
+            st.session_state["img_credit"] = credit
         except Exception as e:
             st.warning(f"Image generation failed: {e}. Falling back to Unsplash.")
             st.session_state["img_bytes"] = b""
@@ -357,3 +405,87 @@ with dl3:
         mime="text/plain",
         use_container_width=True,
     )
+
+# ── Publish to WordPress ───────────────────────────────────────────────────────
+st.divider()
+st.markdown("#### Publish to WordPress")
+
+_wp_url  = st.session_state.get("wp_site_url", "")
+_wp_user = st.session_state.get("wp_username", "")
+_wp_pass = st.session_state.get("wp_app_password", "")
+
+if not (_wp_url and _wp_user and _wp_pass):
+    st.info("Enter your WordPress credentials in the sidebar to enable direct publishing.")
+else:
+    wp_status_choice = st.selectbox(
+        "Publish status",
+        options=["Draft", "Publish Live"],
+        index=0,
+        help=(
+            "Draft = saved to WP but not publicly visible. "
+            "Publish Live = immediately live on your site."
+        ),
+    )
+    wp_status_value = "draft" if wp_status_choice == "Draft" else "publish"
+
+    if st.button("🚀 Publish to WordPress", type="primary"):
+        _img_bytes = st.session_state.get("img_bytes") or b""
+
+        with st.spinner("Publishing to WordPress…"):
+            try:
+                # Step 1: upload featured image (non-fatal if it fails)
+                media_id = 0
+                if _img_bytes:
+                    try:
+                        media_id = upload_media(
+                            site_url=_wp_url,
+                            username=_wp_user,
+                            app_password=_wp_pass,
+                            image_bytes=_img_bytes,
+                            filename=f"{result.get('url_slug', 'feature-image')}.png",
+                            alt_text=result.get("blog_title", ""),
+                        )
+                    except Exception as img_err:
+                        st.warning(
+                            f"Feature image upload failed ({img_err}). "
+                            "Post will be created without a featured image."
+                        )
+
+                # Step 2: create the post
+                wp_result = create_post(
+                    site_url=_wp_url,
+                    username=_wp_user,
+                    app_password=_wp_pass,
+                    title=result.get("blog_title", ""),
+                    content=result.get("content", ""),
+                    slug=result.get("url_slug", ""),
+                    meta_title=result.get("meta_title", ""),
+                    meta_description=result.get("meta_description", ""),
+                    focus_keyword=result.get("focus_keyword", ""),
+                    status=wp_status_value,
+                    featured_media_id=media_id,
+                )
+                st.session_state["wp_publish_result"] = wp_result
+
+            except RuntimeError as e:
+                st.error(str(e))
+            except Exception as e:
+                st.error(f"Unexpected error during publishing: {e}")
+
+    # Persist result across rerenders
+    wp_result = st.session_state.get("wp_publish_result")
+    if wp_result:
+        st.success(
+            f"Published as **{wp_result['status']}** — Post ID: {wp_result['post_id']}"
+        )
+        link_col1, link_col2 = st.columns(2)
+        with link_col1:
+            if wp_result.get("post_url"):
+                st.markdown(f"[View Post →]({wp_result['post_url']})")
+        with link_col2:
+            if wp_result.get("edit_url"):
+                st.markdown(f"[Edit in WP Admin →]({wp_result['edit_url']})")
+        st.caption(
+            "Yoast/RankMath SEO fields are included in the payload. "
+            "Verify them in WP Admin if your SEO plugin requires additional setup."
+        )
