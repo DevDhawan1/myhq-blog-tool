@@ -119,6 +119,31 @@ with st.sidebar:
 
     st.divider()
 
+    # ── Author defaults ───────────────────────────────────────────────────────
+    st.subheader("Author")
+    st.caption("Appended to every published post.")
+
+    author_name = st.text_input(
+        "Author Name",
+        value=st.session_state.get("author_name", os.environ.get("AUTHOR_NAME", "myHQ Team")),
+    )
+    st.session_state["author_name"] = author_name
+
+    author_role = st.text_input(
+        "Author Role",
+        value=st.session_state.get("author_role", os.environ.get("AUTHOR_ROLE", "Content Team")),
+    )
+    st.session_state["author_role"] = author_role
+
+    author_avatar_url = st.text_input(
+        "Author Avatar URL  *(optional)*",
+        value=st.session_state.get("author_avatar_url", os.environ.get("AUTHOR_AVATAR_URL", "")),
+        placeholder="https://myhq.in/author-avatar.jpg",
+    )
+    st.session_state["author_avatar_url"] = author_avatar_url
+
+    st.divider()
+
     # ── Blog context section ──────────────────────────────────────────────────
     st.subheader("Blog Context")
 
@@ -192,6 +217,12 @@ with st.form("blog_form"):
     with col5:
         n_money = st.number_input("Money Page Links", min_value=0, max_value=10, value=2)
 
+    blog_category = st.radio(
+        "Blog Category *",
+        options=["Office Space", "Virtual Office"],
+        horizontal=True,
+    )
+
     with st.expander("Override Money Pages for this blog (optional)"):
         st.caption(
             "Paste specific money page URLs (one per line) to use instead of auto-detected ones."
@@ -203,7 +234,7 @@ with st.form("blog_form"):
         )
 
     submitted = st.form_submit_button(
-        "🚀 Generate Blog Draft", type="primary", use_container_width=True
+        "Generate Blog Draft", type="primary", use_container_width=True
     )
 
 # ── Trigger generation ────────────────────────────────────────────────────────
@@ -228,6 +259,7 @@ if submitted:
                 n_internal, n_money, context, override_money,
             )
             st.session_state["result"] = result
+            st.session_state["blog_category"] = blog_category
             st.session_state["generated_at"] = datetime.now().strftime("%d %b %Y, %H:%M")
             st.session_state["img_bytes"] = None   # reset image cache on new generation
             st.session_state["img_url"] = None
@@ -246,21 +278,20 @@ st.divider()
 
 hcol, tcol = st.columns([4, 1])
 with hcol:
-    st.subheader("📄 Blog Draft")
+    st.subheader("Blog Draft")
 with tcol:
     st.caption(f"Generated: {st.session_state.get('generated_at', '')}")
 
 # ── Feature image ──────────────────────────────────────────────────────────────
 st.markdown("#### Feature Image")
-img_prompt   = result.get("image_prompt", topic)
+blog_title   = result.get("blog_title", topic)
 unsplash_key = os.environ.get("UNSPLASH_ACCESS_KEY", "")
 
 if st.session_state.get("img_bytes") is None:
-    blog_title = result.get("blog_title", topic)
     _api_key = os.environ.get("FREE_IMAGE_API_KEY", "")
     with st.spinner("Generating feature image… (20–40 sec)"):
         try:
-            img_bytes = generate_blog_image(img_prompt, blog_title, api_key=_api_key)
+            img_bytes = generate_blog_image(blog_title, api_key=_api_key)
             st.session_state["img_bytes"]  = img_bytes
             st.session_state["img_url"]    = ""
             credit = "Generated with free-image-generator-api" if _api_key else "Generated with Pollinations.ai · Flux Realism"
@@ -272,7 +303,7 @@ if st.session_state.get("img_bytes") is None:
     if not st.session_state.get("img_bytes"):
         if unsplash_key:
             with st.spinner("Fetching image from Unsplash…"):
-                img_url, img_credit = get_unsplash_image(img_prompt, unsplash_key)
+                img_url, img_credit = get_unsplash_image(blog_title, unsplash_key)
                 st.session_state["img_url"]    = img_url
                 st.session_state["img_credit"] = img_credit
                 if img_url:
@@ -293,8 +324,9 @@ img_credit = st.session_state.get("img_credit", "")
 
 if img_bytes:
     st.image(img_bytes, use_container_width=True)
-    if img_credit:
-        st.caption(img_credit)
+    _api_key_check = os.environ.get("FREE_IMAGE_API_KEY", "")
+    _source_label = "Source: free-image-generator-api" if _api_key_check else "Source: Pollinations.ai (fallback — add FREE_IMAGE_API_KEY to .env)"
+    st.caption(_source_label + (f"  |  {img_credit}" if img_credit else ""))
 elif img_url:
     st.image(img_url, use_container_width=True)
     if img_credit:
@@ -303,7 +335,7 @@ else:
     st.info("Image generation failed. Add an Unsplash key in the sidebar as a fallback.")
 
 with st.expander("Image details"):
-    st.caption(f"Prompt: {img_prompt}")
+    st.caption(f"Prompt: {blog_title}")
 
 # ── SEO metadata ───────────────────────────────────────────────────────────────
 st.markdown("#### SEO Metadata")
@@ -342,16 +374,51 @@ with mc2:
     )
     st.markdown(chips, unsafe_allow_html=True)
 
+# ── Build enriched content (TL;DR injected after first paragraph) ──────────────
+tl_dr = result.get("tl_dr", [])
+_raw_content = result.get("content", "")
+
+if tl_dr:
+    _bullets = "".join(f"<li>{item}</li>" for item in tl_dr)
+    _tldr_html = (
+        '<div class="tldr-box" style="background:#e8f4fd;border-left:4px solid #1a73e8;'
+        'border-radius:4px;padding:16px 20px;margin:24px 0;color:#1a1a2e;">'
+        '<strong style="color:#1a1a2e;">Key Takeaways</strong>'
+        f'<ul style="margin:8px 0 0;padding-left:20px;color:#1a1a2e;">{_bullets}</ul>'
+        '</div>'
+    )
+    # Inject just before the first <h2> — after intro paragraphs, before content sections
+    _insert_at = _raw_content.find("<h2")
+    if _insert_at != -1:
+        enriched_content = (
+            _raw_content[: _insert_at]
+            + _tldr_html + "\n"
+            + _raw_content[_insert_at :]
+        )
+    else:
+        enriched_content = _tldr_html + "\n" + _raw_content
+else:
+    enriched_content = _raw_content
+
+schema_str = result.get("schema_markup", "")
+if schema_str:
+    with st.expander("JSON-LD Schema Markup"):
+        try:
+            import json as _json
+            st.code(_json.dumps(_json.loads(schema_str), indent=2), language="json")
+        except Exception:
+            st.code(schema_str, language="json")
+
 # ── Blog content ───────────────────────────────────────────────────────────────
 st.markdown("---")
 st.markdown(f"## {result.get('blog_title', '')}")
 
 tab_preview, tab_html = st.tabs(["Rendered Preview", "Raw HTML"])
 with tab_preview:
-    st.markdown(result.get("content", ""), unsafe_allow_html=True)
+    st.markdown(enriched_content, unsafe_allow_html=True)
 with tab_html:
     st.text_area(
-        "", result.get("content", ""), height=450,
+        "", enriched_content, height=450,
         key="raw_html_box", label_visibility="collapsed",
     )
 
@@ -428,6 +495,9 @@ else:
     )
     wp_status_value = "draft" if wp_status_choice == "Draft" else "publish"
 
+    _selected_category = st.session_state.get("blog_category", "Office Space")
+    st.caption(f"Category: **{_selected_category}**")
+
     if st.button("🚀 Publish to WordPress", type="primary"):
         _img_bytes = st.session_state.get("img_bytes") or b""
 
@@ -435,35 +505,66 @@ else:
             try:
                 # Step 1: upload featured image (non-fatal if it fails)
                 media_id = 0
+                media_url = ""
                 if _img_bytes:
                     try:
-                        media_id = upload_media(
+                        _media = upload_media(
                             site_url=_wp_url,
                             username=_wp_user,
                             app_password=_wp_pass,
                             image_bytes=_img_bytes,
                             filename=f"{result.get('url_slug', 'feature-image')}.png",
-                            alt_text=result.get("blog_title", ""),
+                            alt_text=f"{result.get('focus_keyword', '')} – {result.get('blog_title', '')}".strip(" –"),
                         )
+                        media_id = _media["id"]
+                        media_url = _media["url"]
                     except Exception as img_err:
                         st.warning(
                             f"Feature image upload failed ({img_err}). "
                             "Post will be created without a featured image."
                         )
 
-                # Step 2: create the post
+                # Step 2: build author HTML block
+                _author_name = st.session_state.get("author_name", "myHQ Team")
+                _author_role = st.session_state.get("author_role", "Content Team")
+                _author_avatar = st.session_state.get("author_avatar_url", "")
+                if _author_avatar:
+                    _avatar_tag = (
+                        f'<img src="{_author_avatar}" alt="{_author_name}" '
+                        f'width="56" height="56" style="border-radius:50%;'
+                        f'float:left;margin-right:14px;object-fit:cover;">'
+                    )
+                else:
+                    _avatar_tag = ""
+                _author_html = (
+                    f'<div style="border-top:1px solid #e0e0e0;margin-top:32px;'
+                    f'padding-top:20px;display:flex;align-items:center;">'
+                    f'{_avatar_tag}'
+                    f'<div><strong style="font-size:15px;">{_author_name}</strong>'
+                    f'<br><span style="color:#666;font-size:13px;">{_author_role}, myHQ</span></div>'
+                    f'</div>'
+                )
+
+                # Step 3: category from form selection
+                _cat_names = [_selected_category]
+
+                # Step 4: create the post
                 wp_result = create_post(
                     site_url=_wp_url,
                     username=_wp_user,
                     app_password=_wp_pass,
                     title=result.get("blog_title", ""),
-                    content=result.get("content", ""),
+                    content=enriched_content,
                     slug=result.get("url_slug", ""),
                     meta_title=result.get("meta_title", ""),
                     meta_description=result.get("meta_description", ""),
                     focus_keyword=result.get("focus_keyword", ""),
                     status=wp_status_value,
                     featured_media_id=media_id,
+                    featured_media_url=media_url,
+                    schema_markup=result.get("schema_markup", ""),
+                    author_html=_author_html,
+                    category_names=_cat_names,
                 )
                 st.session_state["wp_publish_result"] = wp_result
 
@@ -485,7 +586,5 @@ else:
         with link_col2:
             if wp_result.get("edit_url"):
                 st.markdown(f"[Edit in WP Admin →]({wp_result['edit_url']})")
-        st.caption(
-            "Yoast/RankMath SEO fields are included in the payload. "
-            "Verify them in WP Admin if your SEO plugin requires additional setup."
-        )
+        if wp_result.get("meta_warning"):
+            st.warning(wp_result["meta_warning"])

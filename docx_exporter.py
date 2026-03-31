@@ -166,6 +166,14 @@ def build_docx(result: dict, image_bytes: bytes | None = None) -> bytes:
     doc.add_paragraph()
     doc.add_paragraph()
 
+    # ── Key Takeaways (TL;DR) ─────────────────────────────────────────────────
+    tl_dr = result.get("tl_dr", [])
+    if tl_dr:
+        doc.add_heading("Key Takeaways", level=2)
+        for item in tl_dr:
+            doc.add_paragraph(item, style="List Bullet")
+        doc.add_paragraph()
+
     # ── Blog content ──────────────────────────────────────────────────────────
     doc.add_heading("Blog Content", level=2)
     _parse_html_to_doc(doc, result.get("content", ""))

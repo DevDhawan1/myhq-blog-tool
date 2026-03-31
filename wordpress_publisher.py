@@ -2,8 +2,159 @@
 WordPress REST API client for myHQ Blog Drafting Tool.
 Handles media upload and post creation with SEO metadata.
 """
+import json
+import re
 import requests
 from requests.auth import HTTPBasicAuth
+
+
+# ── Gutenberg block converter ─────────────────────────────────────────────────
+
+def _html_to_gutenberg(html: str) -> str:
+    """
+    Convert raw HTML to WordPress Gutenberg block format so the post is
+    stored as discrete blocks rather than a single classic/HTML block.
+
+    Handles: h2, h3, p, ul/li, table, div, script.
+    """
+    # Strip a single outer wrapper <div> that the AI sometimes adds around the
+    # entire content — if left in, the div regex consumes everything as one HTML block.
+    html = html.strip()
+    outer_div = re.match(r'^<div[^>]*>(.*)</div>\s*$', html, re.DOTALL)
+    if outer_div:
+        # Only unwrap if the outermost div contains block-level tags (h2/h3/p)
+        inner = outer_div.group(1).strip()
+        if re.search(r'<(?:h[23]|p)\b', inner, re.IGNORECASE):
+            html = inner
+
+    blocks = []
+
+    pattern = re.compile(
+        r'(<h2[^>]*>.*?</h2>'
+        r'|<h3[^>]*>.*?</h3>'
+        r'|<p[^>]*>.*?</p>'
+        r'|<ul[^>]*>.*?</ul>'
+        r'|<ol[^>]*>.*?</ol>'
+        r'|<table[^>]*>.*?</table>'
+        r'|<div[^>]*>.*?</div>'
+        r'|<script[^>]*>.*?</script>)',
+        re.DOTALL,
+    )
+
+    # re.split() with a capturing group includes the matches inline —
+    # no need for a separate findall(); doing both causes every block to appear twice.
+    for part in pattern.split(html):
+        part = part.strip()
+        if not part:
+            continue
+
+        if re.match(r'<h2', part):
+            blocks.append(f'<!-- wp:heading {{"level":2}} -->\n{part}\n<!-- /wp:heading -->')
+
+        elif re.match(r'<h3', part):
+            blocks.append(f'<!-- wp:heading {{"level":3}} -->\n{part}\n<!-- /wp:heading -->')
+
+        elif re.match(r'<p', part):
+            blocks.append(f'<!-- wp:paragraph -->\n{part}\n<!-- /wp:paragraph -->')
+
+        elif re.match(r'<ul', part):
+            inner = re.sub(
+                r'<li([^>]*)>(.*?)</li>',
+                r'<!-- wp:list-item --><li\1>\2</li><!-- /wp:list-item -->',
+                part, flags=re.DOTALL,
+            )
+            blocks.append(f'<!-- wp:list -->\n{inner}\n<!-- /wp:list -->')
+
+        elif re.match(r'<ol', part):
+            inner = re.sub(
+                r'<li([^>]*)>(.*?)</li>',
+                r'<!-- wp:list-item --><li\1>\2</li><!-- /wp:list-item -->',
+                part, flags=re.DOTALL,
+            )
+            blocks.append(f'<!-- wp:list {{"ordered":true}} -->\n{inner}\n<!-- /wp:list -->')
+
+        elif re.match(r'<table', part):
+            blocks.append(
+                f'<!-- wp:table -->\n'
+                f'<figure class="wp-block-table">{part}</figure>\n'
+                f'<!-- /wp:table -->'
+            )
+
+        else:
+            # div, script, or anything else → raw HTML block
+            blocks.append(f'<!-- wp:html -->\n{part}\n<!-- /wp:html -->')
+
+    return '\n\n'.join(blocks)
+
+
+# ── RankMath FAQ block converter ─────────────────────────────────────────────
+
+def _convert_faq_to_rankmath(gutenberg: str) -> str:
+    """
+    Finds the FAQ section inside already-converted Gutenberg block content and
+    replaces the individual h3/paragraph block pairs with a single
+    <!-- wp:rank-math/faq-block --> so RankMath renders them as structured FAQs.
+    """
+    # Locate the FAQ H2 heading block
+    faq_h2 = re.compile(
+        r'<!-- wp:heading \{"level":2\} -->\s*<h2[^>]*>\s*Frequently Asked Questions\s*</h2>\s*<!-- /wp:heading -->',
+        re.IGNORECASE,
+    )
+    m = faq_h2.search(gutenberg)
+    if not m:
+        return gutenberg
+
+    after_h2 = gutenberg[m.end():]
+
+    # Match h3 + answer block pairs; answer can be a <p> paragraph OR a <ul>/<ol> list
+    pair = re.compile(
+        r'\s*<!-- wp:heading \{"level":3\} -->\s*<h3[^>]*>(.*?)</h3>\s*<!-- /wp:heading -->'
+        r'\s*(?:'
+        r'<!-- wp:paragraph -->\s*(<p[^>]*>.*?</p>)\s*<!-- /wp:paragraph -->'
+        r'|<!-- wp:list(?:[^-]|-(?!-))*?-->\s*(<ul[^>]*>.*?</ul>)\s*<!-- /wp:list -->'
+        r')',
+        re.DOTALL | re.IGNORECASE,
+    )
+
+    questions, html_items, consumed = [], [], 0
+    for pm in pair.finditer(after_h2):
+        # Stop if a non-FAQ h2 appears between the previous match and this one
+        if '<!-- wp:heading {"level":2}' in after_h2[consumed:pm.start()]:
+            break
+        q = re.sub(r'<[^>]+>', '', pm.group(1)).strip()
+        # group(2) = paragraph answer, group(3) = list answer
+        if pm.group(2):
+            a_html = pm.group(2).strip()        # full <p>...</p>
+        else:
+            # Flatten list items into a paragraph for RankMath schema
+            items = re.findall(r'<li[^>]*>(.*?)</li>', pm.group(3) or '', re.DOTALL)
+            a_html = '<p>' + ' '.join(re.sub(r'<[^>]+>', '', i).strip() for i in items) + '</p>'
+        fid = f"faq-question-{len(questions) + 1}"
+        questions.append({"id": fid, "title": q, "content": a_html, "visible": True})
+        html_items.append(
+            f'<div class="rank-math-faq-item">'
+            f'<h3 class="rank-math-question">{q}</h3>'
+            f'<div class="rank-math-answer">{a_html}</div>'
+            f'</div>'
+        )
+        consumed = pm.end()
+
+    if not questions:
+        return gutenberg
+
+    attrs = json.dumps({"questions": questions, "className": ""}, separators=(',', ':'))
+    faq_block = (
+        '<!-- wp:heading {"level":2} -->\n'
+        '<h2 class="wp-block-heading">Frequently Asked Questions</h2>\n'
+        '<!-- /wp:heading -->\n\n'
+        f'<!-- wp:rank-math/faq-block {attrs} -->\n'
+        '<div class="wp-block-rank-math-faq-block">\n'
+        + '\n'.join(html_items)
+        + '\n</div>\n'
+        '<!-- /wp:rank-math/faq-block -->'
+    )
+
+    return gutenberg[: m.start()] + faq_block + after_h2[consumed:]
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────
@@ -16,7 +167,45 @@ def _normalise_site_url(site_url: str) -> str:
         raise ValueError(
             f"WordPress site URL must start with http:// or https://. Got: {url!r}"
         )
+    # Strip common suffixes users accidentally paste
+    for suffix in ("/wp-admin", "/wp-login.php", "/wp-json"):
+        if url.endswith(suffix):
+            url = url[: -len(suffix)]
     return url
+
+
+def _discover_api_base(site_url: str, auth: HTTPBasicAuth) -> str:
+    """
+    Resolve the true WP REST API base URL by following redirects on a GET
+    to /wp-json/. Returns the base site URL after redirects (no trailing slash,
+    no /wp-json suffix), so callers can append /wp-json/wp/v2/... themselves.
+
+    Raises RuntimeError with a human-readable message if the REST API is
+    unreachable or returns non-JSON (e.g. pretty permalinks disabled).
+    """
+    discovery_url = f"{site_url}/wp-json/"
+    try:
+        resp = requests.get(discovery_url, auth=auth, timeout=15, allow_redirects=True)
+    except requests.exceptions.ConnectionError as e:
+        raise RuntimeError(f"Cannot connect to WordPress at {site_url}: {e}")
+
+    # If we were redirected, derive the new base from the final URL
+    final_url = resp.url  # e.g. https://www.myhqblog.in/wp-json/
+    resolved_base = final_url.rstrip("/")
+    if resolved_base.endswith("/wp-json"):
+        resolved_base = resolved_base[: -len("/wp-json")]
+
+    if not resp.ok or "application/json" not in resp.headers.get("Content-Type", ""):
+        raise RuntimeError(
+            f"WordPress REST API not found at {discovery_url}. "
+            "Possible causes:\n"
+            "  • Permalink structure is set to 'Plain' — change it to 'Post name' "
+            "in WP Admin → Settings → Permalinks.\n"
+            f"  • The site URL you entered ({site_url}) redirects to a different domain. "
+            f"Try using {resolved_base} instead."
+        )
+
+    return resolved_base
 
 
 def _check_wp_error(response: requests.Response, context: str) -> None:
@@ -55,6 +244,47 @@ def _check_wp_error(response: requests.Response, context: str) -> None:
     raise RuntimeError(f"{context} failed ({status}): [{code}] {message}")
 
 
+def _resolve_category_ids(base: str, auth: HTTPBasicAuth, category_names: list[str]) -> list[int]:
+    """
+    Given a list of category name strings, return matching WP category IDs.
+    Creates any category that doesn't already exist.
+    Silently skips on any error so publishing always continues.
+    """
+    ids = []
+    cat_url = f"{base}/wp-json/wp/v2/categories"
+    for name in category_names:
+        name = name.strip()
+        if not name:
+            continue
+        try:
+            # Search for existing category
+            resp = requests.get(
+                cat_url,
+                params={"search": name, "per_page": 5},
+                auth=auth,
+                timeout=10,
+            )
+            if resp.ok:
+                matches = [c for c in resp.json() if c["name"].lower() == name.lower()]
+                if matches:
+                    ids.append(matches[0]["id"])
+                    continue
+
+            # Not found — create it
+            resp = requests.post(
+                cat_url,
+                json={"name": name},
+                auth=auth,
+                timeout=10,
+            )
+            if resp.ok:
+                ids.append(resp.json()["id"])
+        except Exception:
+            pass  # Non-fatal — post will still be created without this category
+
+    return ids
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def upload_media(
@@ -77,6 +307,7 @@ def upload_media(
 
     base = _normalise_site_url(site_url)
     auth = HTTPBasicAuth(username, app_password.replace(" ", ""))
+    base = _discover_api_base(base, auth)
     media_url = f"{base}/wp-json/wp/v2/media"
 
     resp = requests.post(
@@ -105,7 +336,8 @@ def upload_media(
             timeout=15,
         )
 
-    return int(media_id)
+    source_url = data.get("source_url", "")
+    return {"id": int(media_id), "url": source_url}
 
 
 def create_post(
@@ -120,6 +352,10 @@ def create_post(
     focus_keyword: str,
     status: str = "draft",
     featured_media_id: int = 0,
+    featured_media_url: str = "",
+    schema_markup: str = "",
+    author_html: str = "",
+    category_names: list[str] | None = None,
 ) -> dict:
     """
     Create a WP post via POST /wp-json/wp/v2/posts.
@@ -128,24 +364,78 @@ def create_post(
     ----------
     status            : "draft" or "publish"
     featured_media_id : WP attachment ID from upload_media(); 0 = no featured image
+    schema_markup     : JSON-LD string (without <script> tags) — prepended to content
+    author_html       : HTML string for author bio block — appended to content
+    category_names    : list of WP category name strings; looked up / created automatically
 
     Returns
     -------
     {
         "post_id":  int,
-        "post_url": str,   # public-facing URL
-        "edit_url": str,   # WP Admin edit link
-        "status":   str,   # confirmed status from WP
+        "post_url": str,
+        "edit_url": str,
+        "status":   str,
     }
-
-    Raises RuntimeError on auth failure, slug conflict, or non-2xx response.
     """
     base = _normalise_site_url(site_url)
     auth = HTTPBasicAuth(username, app_password.replace(" ", ""))
+    base = _discover_api_base(base, auth)
 
+    # ── Normalise internal blog links to the publishing domain ───────────────
+    # The generator uses myhq.in/blog/ URLs (from the scraper context), but the
+    # WordPress site lives on myhqblog.in. RankMath only counts same-domain links
+    # as internal, so we rewrite them here before publishing.
+    content = content.replace("https://myhq.in/blog/", "https://myhqblog.in/blog/")
+
+    # ── Convert HTML → Gutenberg blocks → RankMath FAQ block ─────────────────
+    block_content = _convert_faq_to_rankmath(_html_to_gutenberg(content))
+
+    # ── Inject feature image block after 1st paragraph ────────────────────────
+    if featured_media_id:
+        src_attr = f' src="{featured_media_url}"' if featured_media_url else ""
+        img_block = (
+            f'<!-- wp:image {{"id":{featured_media_id},"sizeSlug":"large","linkDestination":"none"}} -->\n'
+            f'<figure class="wp-block-image size-large">'
+            f'<img{src_attr} alt="{title}" class="wp-image-{featured_media_id}"/>'
+            f'</figure>\n'
+            f'<!-- /wp:image -->'
+        )
+        # Try after first paragraph; fall back to after first block of any kind
+        for marker in ("<!-- /wp:paragraph -->", "<!-- /wp:heading -->", "<!-- /wp:html -->"):
+            pos = block_content.find(marker)
+            if pos != -1:
+                insert_pos = pos + len(marker)
+                block_content = (
+                    block_content[:insert_pos]
+                    + "\n\n" + img_block + "\n\n"
+                    + block_content[insert_pos:]
+                )
+                break
+
+    # ── Assemble full content ─────────────────────────────────────────────────
+    full_content = block_content
+    if schema_markup:
+        try:
+            json.loads(schema_markup)
+            schema_block = (
+                f'<!-- wp:html -->\n'
+                f'<script type="application/ld+json">{schema_markup}</script>\n'
+                f'<!-- /wp:html -->'
+            )
+            full_content = schema_block + "\n\n" + full_content
+        except Exception:
+            pass
+
+    if author_html:
+        full_content = full_content + "\n\n<!-- wp:html -->\n" + author_html + "\n<!-- /wp:html -->"
+
+    # ── Resolve category IDs ──────────────────────────────────────────────────
+    cat_ids = _resolve_category_ids(base, auth, category_names or [])
+
+    # ── Build payload ─────────────────────────────────────────────────────────
     payload = {
         "title":   title,
-        "content": content,
+        "content": full_content,
         "slug":    slug,
         "status":  status,
         "meta": {
@@ -161,6 +451,8 @@ def create_post(
     }
     if featured_media_id:
         payload["featured_media"] = featured_media_id
+    if cat_ids:
+        payload["categories"] = cat_ids
 
     resp = requests.post(
         f"{base}/wp-json/wp/v2/posts",
@@ -173,9 +465,46 @@ def create_post(
     data    = resp.json()
     post_id = data["id"]
 
+    # ── Separate PATCH for RankMath SEO meta ─────────────────────────────────
+    seo_meta = {
+        "rank_math_title":          meta_title,
+        "rank_math_description":    meta_description,
+        "rank_math_focus_keyword":  focus_keyword,
+        "_yoast_wpseo_title":       meta_title,
+        "_yoast_wpseo_metadesc":    meta_description,
+        "_yoast_wpseo_focuskw":     focus_keyword,
+    }
+    meta_warning = None
+    try:
+        meta_resp = requests.post(
+            f"{base}/wp-json/wp/v2/posts/{post_id}",
+            json={"meta": seo_meta},
+            auth=auth,
+            timeout=15,
+        )
+        if meta_resp.ok:
+            # Verify RankMath description was actually written
+            written = meta_resp.json().get("meta", {})
+            if written.get("rank_math_description", "") != meta_description:
+                meta_warning = (
+                    "SEO meta fields could not be saved automatically. "
+                    "Add this snippet to your theme's functions.php:\n\n"
+                    "add_action('init', function() {\n"
+                    "    foreach(['rank_math_title','rank_math_description','rank_math_focus_keyword'] as $k) {\n"
+                    "        register_post_meta('post', $k, ['show_in_rest'=>true,'single'=>true,'type'=>'string',\n"
+                    "            'auth_callback'=>fn()=>current_user_can('edit_posts')]);\n"
+                    "    }\n"
+                    "});"
+                )
+        else:
+            meta_warning = f"SEO meta PATCH failed ({meta_resp.status_code}). Add the functions.php snippet to enable REST meta writes."
+    except Exception as e:
+        meta_warning = f"SEO meta update error: {e}"
+
     return {
-        "post_id":  post_id,
-        "post_url": data.get("link", ""),
-        "edit_url": f"{base}/wp-admin/post.php?post={post_id}&action=edit",
-        "status":   data.get("status", status),
+        "post_id":      post_id,
+        "post_url":     data.get("link", ""),
+        "edit_url":     f"{base}/wp-admin/post.php?post={post_id}&action=edit",
+        "status":       data.get("status", status),
+        "meta_warning": meta_warning,
     }
