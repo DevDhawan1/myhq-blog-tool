@@ -15,7 +15,7 @@ if os.path.exists(_env_path):
                     os.environ[_k] = _v
 
 from scraper import build_context, load_context
-from generator import setup_gemini, generate_blog
+from generator import setup_gemini, generate_blog, setup_groq, generate_blog_groq
 from image_generator import generate_blog_image, get_unsplash_image
 from docx_exporter import build_docx
 from wordpress_publisher import upload_media, create_post
@@ -53,23 +53,42 @@ with st.sidebar:
     # ── API Keys section ──────────────────────────────────────────────────────
     st.subheader("API Keys")
 
-    api_key = st.text_input(
-        "Gemini API Key  *(required)*",
-        value=st.session_state.get("gemini_api_key", os.environ.get("GEMINI_API_KEY", "")),
-        type="password",
-        help="Free from aistudio.google.com → Sign in → Get API Key",
-    )
-    st.session_state["gemini_api_key"] = api_key
-    if api_key:
-        os.environ["GEMINI_API_KEY"] = api_key
-
-    gemini_model = st.selectbox(
-        "Gemini Model",
-        options=["gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash"],
+    llm_provider = st.selectbox(
+        "LLM Provider",
+        options=["Groq (free, 14,400/day)", "Gemini"],
         index=0,
-        help="gemini-2.0-flash: 1500 req/day free  |  gemini-2.5-flash: 20 req/day free  |  gemini-1.5-flash: 1500 req/day free",
     )
-    st.session_state["gemini_model"] = gemini_model
+    st.session_state["llm_provider"] = llm_provider
+
+    if "Groq" in llm_provider:
+        groq_key = st.text_input(
+            "Groq API Key  *(required)*",
+            value=st.session_state.get("groq_api_key", os.environ.get("GROQ_API_KEY", "")),
+            type="password",
+            help="Free at console.groq.com — no card needed, 14,400 req/day",
+        )
+        st.session_state["groq_api_key"] = groq_key
+        if groq_key:
+            os.environ["GROQ_API_KEY"] = groq_key
+        api_key = groq_key  # used for the "no key" guard below
+    else:
+        api_key = st.text_input(
+            "Gemini API Key  *(required)*",
+            value=st.session_state.get("gemini_api_key", os.environ.get("GEMINI_API_KEY", "")),
+            type="password",
+            help="Free from aistudio.google.com → Sign in → Get API Key",
+        )
+        st.session_state["gemini_api_key"] = api_key
+        if api_key:
+            os.environ["GEMINI_API_KEY"] = api_key
+
+        gemini_model = st.selectbox(
+            "Gemini Model",
+            options=["gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash"],
+            index=0,
+            help="gemini-2.0-flash: 1500 req/day free  |  gemini-2.5-flash: 20 req/day free",
+        )
+        st.session_state["gemini_model"] = gemini_model
 
     free_image_api_key = st.text_input(
         "Image API Key  *(primary)*",
@@ -247,8 +266,10 @@ with st.form("blog_form"):
 
 # ── Trigger generation ────────────────────────────────────────────────────────
 if submitted:
+    _provider = st.session_state.get("llm_provider", "Groq (free, 14,400/day)")
     if not api_key:
-        st.error("Enter your Gemini API key in the sidebar.")
+        _key_name = "Groq" if "Groq" in _provider else "Gemini"
+        st.error(f"Enter your {_key_name} API key in the sidebar.")
         st.stop()
     if not topic.strip():
         st.error("Please enter a blog topic.")
@@ -259,13 +280,21 @@ if submitted:
         urls = [u.strip() for u in override_raw.strip().splitlines() if u.strip()]
         override_money = [{"url": u, "anchor_texts": [], "link_count": 0} for u in urls]
 
-    with st.spinner("Asking Gemini to write your blog… (auto-retries on rate limit)"):
+    _spinner_msg = "Asking Groq (Llama 3.3 70B) to write your blog…" if "Groq" in _provider else "Asking Gemini to write your blog… (auto-retries on rate limit)"
+    with st.spinner(_spinner_msg):
         try:
-            model = setup_gemini(api_key, st.session_state.get("gemini_model", "gemini-2.0-flash"))
-            result = generate_blog(
-                model, topic, word_count, keyword_density,
-                n_internal, n_money, context, override_money,
-            )
+            if "Groq" in _provider:
+                client = setup_groq(api_key)
+                result = generate_blog_groq(
+                    client, topic, word_count, keyword_density,
+                    n_internal, n_money, context, override_money,
+                )
+            else:
+                model = setup_gemini(api_key, st.session_state.get("gemini_model", "gemini-2.0-flash"))
+                result = generate_blog(
+                    model, topic, word_count, keyword_density,
+                    n_internal, n_money, context, override_money,
+                )
             st.session_state["result"] = result
             st.session_state["blog_category"] = blog_category
             st.session_state["generated_at"] = datetime.now().strftime("%d %b %Y, %H:%M")

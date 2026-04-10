@@ -9,6 +9,11 @@ def setup_gemini(api_key: str, model_name: str = "gemini-2.0-flash"):
     return genai.GenerativeModel(model_name)
 
 
+def setup_groq(api_key: str):
+    from groq import Groq
+    return Groq(api_key=api_key)
+
+
 def _build_prompt(topic, word_count, keyword_density, n_internal, n_money, context, override_money_pages=None):
 
     # ── Tone & style samples (first 6 blogs) ──────────────────────────────────
@@ -221,3 +226,45 @@ def generate_blog(model, topic, word_count, keyword_density, n_internal, n_money
             result["url_slug"] = kw_slug
 
     return result
+
+
+def _fix_result(result):
+    """Post-generation validation shared across providers."""
+    kw   = result.get("focus_keyword", "").strip()
+    desc = result.get("meta_description", "").strip()
+    slug = result.get("url_slug", "").strip()
+
+    if kw and kw.lower() not in desc.lower():
+        prefix = kw + ": "
+        available = 157 - len(prefix)
+        if available >= 20:
+            trimmed = desc[:available].rsplit(" ", 1)[0]
+            result["meta_description"] = prefix + trimmed + "..."
+        else:
+            result["meta_description"] = (prefix + desc)[:160]
+
+    if kw:
+        kw_slug = kw.lower().replace(" ", "-")
+        if kw_slug not in slug:
+            result["url_slug"] = kw_slug
+
+    return result
+
+
+def generate_blog_groq(client, topic, word_count, keyword_density, n_internal, n_money,
+                       context, override_money_pages=None, model_name="llama-3.3-70b-versatile"):
+    prompt = _build_prompt(
+        topic, word_count, keyword_density, n_internal, n_money,
+        context, override_money_pages,
+    )
+
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0.75,
+        max_tokens=8192,
+    )
+
+    result = json.loads(response.choices[0].message.content)
+    return _fix_result(result)
