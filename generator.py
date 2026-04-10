@@ -1,6 +1,7 @@
 import google.generativeai as genai
 import json
 import re
+import time
 
 
 def setup_gemini(api_key: str):
@@ -124,6 +125,9 @@ Rules:
 - AVOID AI TELLS — never use: "In today's world", "It's worth noting", "In conclusion", "As we've explored", "Delve into", "It is important to note", "Navigating the", "Game-changer", "Leverage", "Unlock", "Comprehensive". Write like an informed human journalist, not a language model."""
 
 
+_MAX_RETRIES = 4
+
+
 def generate_blog(model, topic, word_count, keyword_density, n_internal, n_money,
                   context, override_money_pages=None):
     prompt = _build_prompt(
@@ -131,35 +135,60 @@ def generate_blog(model, topic, word_count, keyword_density, n_internal, n_money
         context, override_money_pages,
     )
 
-    response = model.generate_content(
-        prompt,
-        generation_config=genai.GenerationConfig(
-            temperature=0.75,
-            max_output_tokens=16384,
-            response_mime_type="application/json",
-            response_schema={
-                "type": "OBJECT",
-                "properties": {
-                    "meta_title":           {"type": "STRING"},
-                    "meta_description":     {"type": "STRING"},
-                    "focus_keyword":        {"type": "STRING"},
-                    "subsidiary_keywords":  {"type": "ARRAY", "items": {"type": "STRING"}},
-                    "url_slug":             {"type": "STRING"},
-                    "blog_title":           {"type": "STRING"},
-                    "image_prompt":         {"type": "STRING"},
-                    "tl_dr":               {"type": "ARRAY", "items": {"type": "STRING"}},
-                    "schema_markup":        {"type": "STRING"},
-                    "wp_categories":        {"type": "ARRAY", "items": {"type": "STRING"}},
-                    "content":              {"type": "STRING"},
-                },
-                "required": [
-                    "meta_title", "meta_description", "focus_keyword",
-                    "subsidiary_keywords", "url_slug", "blog_title",
-                    "image_prompt", "tl_dr", "schema_markup", "wp_categories", "content",
-                ],
+    generation_config = genai.GenerationConfig(
+        temperature=0.75,
+        max_output_tokens=16384,
+        response_mime_type="application/json",
+        response_schema={
+            "type": "OBJECT",
+            "properties": {
+                "meta_title":           {"type": "STRING"},
+                "meta_description":     {"type": "STRING"},
+                "focus_keyword":        {"type": "STRING"},
+                "subsidiary_keywords":  {"type": "ARRAY", "items": {"type": "STRING"}},
+                "url_slug":             {"type": "STRING"},
+                "blog_title":           {"type": "STRING"},
+                "image_prompt":         {"type": "STRING"},
+                "tl_dr":               {"type": "ARRAY", "items": {"type": "STRING"}},
+                "schema_markup":        {"type": "STRING"},
+                "wp_categories":        {"type": "ARRAY", "items": {"type": "STRING"}},
+                "content":              {"type": "STRING"},
             },
-        ),
+            "required": [
+                "meta_title", "meta_description", "focus_keyword",
+                "subsidiary_keywords", "url_slug", "blog_title",
+                "image_prompt", "tl_dr", "schema_markup", "wp_categories", "content",
+            ],
+        },
     )
+
+    last_exc = None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            response = model.generate_content(prompt, generation_config=generation_config)
+            break
+        except Exception as e:
+            last_exc = e
+            err_str = str(e)
+            is_rate_limit = "429" in err_str or "quota" in err_str.lower() or "ResourceExhausted" in type(e).__name__
+            if not is_rate_limit:
+                raise
+            # Daily quota is exhausted — retrying won't help
+            if "PerDay" in err_str or "per_day" in err_str.lower():
+                raise RuntimeError(
+                    "Gemini free-tier daily quota exhausted (20 requests/day). "
+                    "The quota resets at midnight Pacific time. "
+                    "To remove this limit, add billing to your Google AI Studio project."
+                ) from e
+            if attempt == _MAX_RETRIES - 1:
+                raise
+            # Per-minute rate limit — wait and retry
+            m = re.search(r'retry_delay\s*\{\s*seconds:\s*(\d+)', err_str)
+            wait = int(m.group(1)) + 3 if m else 65
+            print(f"[generator] Rate limit hit — waiting {wait}s before retry {attempt + 1}/{_MAX_RETRIES - 1}...")
+            time.sleep(wait)
+    else:
+        raise last_exc
 
     result = json.loads(response.text)
 

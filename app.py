@@ -251,7 +251,7 @@ if submitted:
         urls = [u.strip() for u in override_raw.strip().splitlines() if u.strip()]
         override_money = [{"url": u, "anchor_texts": [], "link_count": 0} for u in urls]
 
-    with st.spinner("Asking Gemini to write your blog…"):
+    with st.spinner("Asking Gemini to write your blog… (auto-retries on rate limit)"):
         try:
             model = setup_gemini(api_key)
             result = generate_blog(
