@@ -14,40 +14,48 @@ def setup_groq(api_key: str):
     return Groq(api_key=api_key)
 
 
-def _build_prompt(topic, word_count, keyword_density, n_internal, n_money, context, override_money_pages=None):
+def _build_prompt(topic, word_count, keyword_density, n_internal, n_money, context,
+                  override_money_pages=None, compact=False):
+    # compact=True trims context sections to fit Groq's free-tier 12k TPM limit
 
-    # ── Tone & style samples (first 6 blogs) ──────────────────────────────────
+    # ── Tone & style samples ──────────────────────────────────────────────────
+    sample_count = 2 if compact else 6
+    excerpt_len  = 200 if compact else 400
     tone_samples = "\n\n".join(
-        f"Title: {b['title']}\nExcerpt: {b['content_preview'][:400]}"
-        for b in context["blogs"][:6]
+        f"Title: {b['title']}\nExcerpt: {b['content_preview'][:excerpt_len]}"
+        for b in context["blogs"][:sample_count]
         if b.get("content_preview")
     )
 
     # ── Real meta title / description examples ────────────────────────────────
+    meta_limit = 5 if compact else 12
     meta_examples_text = "\n".join(
         f"  Meta title : {e['meta_title']}\n"
         f"  Meta desc  : {e['meta_desc']}"
         + (f"\n  Keywords   : {e['keywords']}" if e.get("keywords") else "")
-        for e in context.get("meta_examples", [])[:12]
+        for e in context.get("meta_examples", [])[:meta_limit]
     )
 
     # ── Internal blog link pool ───────────────────────────────────────────────
+    internal_limit = 40 if compact else len(context["blogs"])
     internal_pool = "\n".join(
         f"- {b['title']}  →  {b['url']}"
-        for b in context["blogs"]
+        for b in context["blogs"][:internal_limit]
         if b.get("url") and b.get("title")
     )
 
     # ── Money pages pool ──────────────────────────────────────────────────────
-    mp_list = override_money_pages if override_money_pages else context["money_pages"][:25]
+    money_limit = 12 if compact else 25
+    mp_list = override_money_pages if override_money_pages else context["money_pages"][:money_limit]
     money_pool = "\n".join(
         f"- {mp['url']}  |  anchors: {', '.join(mp.get('anchor_texts', [])) or 'use natural anchor'}"
         for mp in mp_list
     )
 
     # ── Existing titles (avoid duplication) ───────────────────────────────────
+    titles_limit = 30 if compact else len(context["blogs"])
     existing_titles = "\n".join(
-        f"- {b['title']}" for b in context["blogs"] if b.get("title")
+        f"- {b['title']}" for b in context["blogs"][:titles_limit] if b.get("title")
     )
 
     return f"""You are a senior SEO content writer for myHQ — India's leading marketplace for coworking spaces, virtual offices, and managed office solutions.
@@ -255,7 +263,7 @@ def generate_blog_groq(client, topic, word_count, keyword_density, n_internal, n
                        context, override_money_pages=None, model_name="llama-3.3-70b-versatile"):
     prompt = _build_prompt(
         topic, word_count, keyword_density, n_internal, n_money,
-        context, override_money_pages,
+        context, override_money_pages, compact=True,
     )
 
     response = client.chat.completions.create(
