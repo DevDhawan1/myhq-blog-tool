@@ -19,8 +19,8 @@ def _build_prompt(topic, word_count, keyword_density, n_internal, n_money, conte
     # compact=True trims context sections to fit Groq's free-tier 12k TPM limit
 
     # ── Tone & style samples ──────────────────────────────────────────────────
-    sample_count = 2 if compact else 6
-    excerpt_len  = 200 if compact else 400
+    sample_count = 1 if compact else 6
+    excerpt_len  = 120 if compact else 400
     tone_samples = "\n\n".join(
         f"Title: {b['title']}\nExcerpt: {b['content_preview'][:excerpt_len]}"
         for b in context["blogs"][:sample_count]
@@ -28,7 +28,7 @@ def _build_prompt(topic, word_count, keyword_density, n_internal, n_money, conte
     )
 
     # ── Real meta title / description examples ────────────────────────────────
-    meta_limit = 5 if compact else 12
+    meta_limit = 3 if compact else 12
     meta_examples_text = "\n".join(
         f"  Meta title : {e['meta_title']}\n"
         f"  Meta desc  : {e['meta_desc']}"
@@ -37,7 +37,7 @@ def _build_prompt(topic, word_count, keyword_density, n_internal, n_money, conte
     )
 
     # ── Internal blog link pool ───────────────────────────────────────────────
-    internal_limit = 40 if compact else len(context["blogs"])
+    internal_limit = 10 if compact else len(context["blogs"])
     internal_pool = "\n".join(
         f"- {b['title']}  →  {b['url']}"
         for b in context["blogs"][:internal_limit]
@@ -45,7 +45,7 @@ def _build_prompt(topic, word_count, keyword_density, n_internal, n_money, conte
     )
 
     # ── Money pages pool ──────────────────────────────────────────────────────
-    money_limit = 12 if compact else 25
+    money_limit = 8 if compact else 25
     mp_list = override_money_pages if override_money_pages else context["money_pages"][:money_limit]
     money_pool = "\n".join(
         f"- {mp['url']}  |  anchors: {', '.join(mp.get('anchor_texts', [])) or 'use natural anchor'}"
@@ -53,7 +53,7 @@ def _build_prompt(topic, word_count, keyword_density, n_internal, n_money, conte
     )
 
     # ── Existing titles (avoid duplication) ───────────────────────────────────
-    titles_limit = 30 if compact else len(context["blogs"])
+    titles_limit = 8 if compact else len(context["blogs"])
     existing_titles = "\n".join(
         f"- {b['title']}" for b in context["blogs"][:titles_limit] if b.get("title")
     )
@@ -261,8 +261,10 @@ def _fix_result(result):
 
 def generate_blog_groq(client, topic, word_count, keyword_density, n_internal, n_money,
                        context, override_money_pages=None, model_name="llama-3.3-70b-versatile"):
+    # Cap word count to keep output tokens within Groq free-tier TPM budget
+    groq_word_count = min(word_count, 900)
     prompt = _build_prompt(
-        topic, word_count, keyword_density, n_internal, n_money,
+        topic, groq_word_count, keyword_density, n_internal, n_money,
         context, override_money_pages, compact=True,
     )
 
@@ -271,7 +273,7 @@ def generate_blog_groq(client, topic, word_count, keyword_density, n_internal, n
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
         temperature=0.75,
-        max_tokens=8192,
+        max_tokens=4096,
     )
 
     result = json.loads(response.choices[0].message.content)
