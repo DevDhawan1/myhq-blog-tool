@@ -175,8 +175,13 @@ def generate_blog(model, topic, word_count, keyword_density, n_internal, n_money
                 raise
             # Daily quota is exhausted — retrying won't help
             if "PerDay" in err_str or "per_day" in err_str.lower():
+                # Extract model and quota_value from the raw error for a precise message
+                model_m = re.search(r'value:\s*"([^"]+)"', err_str)
+                quota_m = re.search(r'quota_value:\s*(\d+)', err_str)
+                model_str = model_m.group(1) if model_m else "this model"
+                quota_str = f"{quota_m.group(1)} requests/day" if quota_m else "the daily limit"
                 raise RuntimeError(
-                    "Gemini free-tier daily quota exhausted (20 requests/day). "
+                    f"Gemini free-tier daily quota exhausted for {model_str} ({quota_str}). "
                     "The quota resets at midnight Pacific time. "
                     "To remove this limit, add billing to your Google AI Studio project."
                 ) from e
