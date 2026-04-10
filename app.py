@@ -63,6 +63,14 @@ with st.sidebar:
     if api_key:
         os.environ["GEMINI_API_KEY"] = api_key
 
+    gemini_model = st.selectbox(
+        "Gemini Model",
+        options=["gemini-2.0-flash", "gemini-2.5-flash", "gemini-1.5-flash"],
+        index=0,
+        help="gemini-2.0-flash: 1500 req/day free  |  gemini-2.5-flash: 20 req/day free  |  gemini-1.5-flash: 1500 req/day free",
+    )
+    st.session_state["gemini_model"] = gemini_model
+
     free_image_api_key = st.text_input(
         "Image API Key  *(primary)*",
         value=st.session_state.get("free_image_api_key", os.environ.get("FREE_IMAGE_API_KEY", "")),
@@ -253,7 +261,7 @@ if submitted:
 
     with st.spinner("Asking Gemini to write your blog… (auto-retries on rate limit)"):
         try:
-            model = setup_gemini(api_key)
+            model = setup_gemini(api_key, st.session_state.get("gemini_model", "gemini-2.0-flash"))
             result = generate_blog(
                 model, topic, word_count, keyword_density,
                 n_internal, n_money, context, override_money,

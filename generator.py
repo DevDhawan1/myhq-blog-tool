@@ -4,9 +4,9 @@ import re
 import time
 
 
-def setup_gemini(api_key: str):
+def setup_gemini(api_key: str, model_name: str = "gemini-2.0-flash"):
     genai.configure(api_key=api_key)
-    return genai.GenerativeModel("gemini-2.5-flash")
+    return genai.GenerativeModel(model_name)
 
 
 def _build_prompt(topic, word_count, keyword_density, n_internal, n_money, context, override_money_pages=None):
