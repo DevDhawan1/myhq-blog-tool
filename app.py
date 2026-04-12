@@ -303,6 +303,7 @@ if submitted:
             st.session_state["img_credit"] = None
             st.session_state["wp_publish_result"] = None  # reset publish state on new generation
             st.session_state["docx_auto_saved"] = False   # trigger auto-save on next render
+            st.session_state["docx_save_path"] = None
         except Exception as e:
             st.error(f"Generation error: {e}")
             st.stop()
@@ -467,6 +468,9 @@ st.markdown("#### Download Draft")
 slug = result.get("url_slug", "blog-draft")
 full_draft = {"generated_at": st.session_state.get("generated_at", ""), **result}
 
+if st.session_state.get("docx_save_path"):
+    st.info(f"💾 Auto-saved: `{st.session_state['docx_save_path']}`")
+
 dl1, dl2, dl3 = st.columns(3)
 
 with dl1:
@@ -483,7 +487,7 @@ with dl1:
                 with open(_save_path, "wb") as _fh:
                     _fh.write(docx_bytes)
                 st.session_state["docx_auto_saved"] = True
-                st.toast(f"Saved to Downloads/{slug}.docx", icon="💾")
+                st.session_state["docx_save_path"] = _save_path
 
             st.download_button(
                 "⬇️ Word Document (.docx)",
