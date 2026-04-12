@@ -302,6 +302,7 @@ if submitted:
             st.session_state["img_url"] = None
             st.session_state["img_credit"] = None
             st.session_state["wp_publish_result"] = None  # reset publish state on new generation
+            st.session_state["docx_auto_saved"] = False   # trigger auto-save on next render
         except Exception as e:
             st.error(f"Generation error: {e}")
             st.stop()
@@ -473,6 +474,17 @@ with dl1:
     with st.spinner("Building .docx…"):
         try:
             docx_bytes = build_docx(result, img_bytes if img_bytes else None)
+
+            # Auto-save once per generation to the local downloads/ folder
+            if not st.session_state.get("docx_auto_saved"):
+                _downloads_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")
+                os.makedirs(_downloads_dir, exist_ok=True)
+                _save_path = os.path.join(_downloads_dir, f"{slug}.docx")
+                with open(_save_path, "wb") as _fh:
+                    _fh.write(docx_bytes)
+                st.session_state["docx_auto_saved"] = True
+                st.toast(f"Auto-saved → downloads/{slug}.docx", icon="💾")
+
             st.download_button(
                 "⬇️ Word Document (.docx)",
                 data=docx_bytes,
