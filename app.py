@@ -1,8 +1,6 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import json
 import os
-import base64
 from datetime import datetime
 # Read .env manually — no library dependency, works regardless of CWD or encoding
 _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -477,25 +475,15 @@ with dl1:
         try:
             docx_bytes = build_docx(result, img_bytes if img_bytes else None)
 
-            # Auto-download to the browser's downloads folder once per generation
+            # Auto-save once per generation to the user's Downloads folder
             if not st.session_state.get("docx_auto_saved"):
-                _b64 = base64.b64encode(docx_bytes).decode()
-                _mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                components.html(
-                    f"""<script>
-                    (function(){{
-                        var a = document.createElement('a');
-                        a.href = 'data:{_mime};base64,{_b64}';
-                        a.download = '{slug}.docx';
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                    }})();
-                    </script>""",
-                    height=0,
-                )
+                _dl_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+                os.makedirs(_dl_dir, exist_ok=True)
+                _save_path = os.path.join(_dl_dir, f"{slug}.docx")
+                with open(_save_path, "wb") as _fh:
+                    _fh.write(docx_bytes)
                 st.session_state["docx_auto_saved"] = True
-                st.toast(f"Downloading {slug}.docx…", icon="💾")
+                st.toast(f"Saved to Downloads/{slug}.docx", icon="💾")
 
             st.download_button(
                 "⬇️ Word Document (.docx)",
