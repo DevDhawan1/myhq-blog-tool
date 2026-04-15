@@ -15,7 +15,7 @@ if os.path.exists(_env_path):
                     os.environ[_k] = _v
 
 from scraper import build_context, load_context
-from generator import setup_gemini, generate_blog, setup_groq, generate_blog_groq
+from generator import setup_gemini, generate_blog, setup_groq, generate_blog_groq, seo_quality_score
 from image_generator import generate_blog_image, get_unsplash_image
 from docx_exporter import build_docx
 from wordpress_publisher import upload_media, create_post
@@ -298,6 +298,9 @@ if submitted:
             st.session_state["result"] = result
             st.session_state["blog_category"] = blog_category
             st.session_state["generated_at"] = datetime.now().strftime("%d %b %Y, %H:%M")
+            st.session_state["seo_score"] = seo_quality_score(
+                result, n_internal, n_money, keyword_density, word_count,
+            )
             st.session_state["img_bytes"] = None   # reset image cache on new generation
             st.session_state["img_url"] = None
             st.session_state["img_credit"] = None
@@ -412,6 +415,26 @@ with mc2:
         f'<span class="kw-chip">{kw}</span>' for kw in result.get("subsidiary_keywords", [])
     )
     st.markdown(chips, unsafe_allow_html=True)
+
+# ── SEO Quality Score ─────────────────────────────────────────────────────────
+seo_score_data = st.session_state.get("seo_score")
+if seo_score_data:
+    _sc = seo_score_data["score"]
+    _mx = seo_score_data["max"]
+    if _sc >= 10:
+        _score_color = "#2d8a4e"   # green
+        _score_label = "Excellent"
+    elif _sc >= 7:
+        _score_color = "#d4a017"   # yellow
+        _score_label = "Good"
+    else:
+        _score_color = "#c0392b"   # red
+        _score_label = "Needs Work"
+
+    with st.expander(f"SEO Score: {_sc}/{_mx} — {_score_label}"):
+        for check in seo_score_data["checks"]:
+            _icon = "✅" if check["passed"] else "⚠️"
+            st.markdown(f"{_icon} **{check['name']}** — {check['detail']}")
 
 # ── Build enriched content (TL;DR injected after first paragraph) ──────────────
 tl_dr = result.get("tl_dr", [])

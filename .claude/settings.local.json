@@ -2,7 +2,12 @@
   "permissions": {
     "allow": [
       "Read(//tmp/**)",
-      "Bash(curl -sL -w \"\\\\n===STATUS:%{http_code}|CT:%{content_type}===\" \"https://myhqblog.in/post-sitemap.xml\")"
+      "Bash(curl -sL -w \"\\\\n===STATUS:%{http_code}|CT:%{content_type}===\" \"https://myhqblog.in/post-sitemap.xml\")",
+      "Bash(npx @anthropic-ai/claude-code-skills add https://github.com/aaron-he-zhu/seo-geo-claude-skills --skill seo-content-writer)",
+      "Bash(npx skillfish:*)",
+      "Bash(python -c \"import generator; print\\('generator.py OK'\\)\")",
+      "Bash(python -c \"import docx_exporter; print\\('docx_exporter.py OK'\\)\")",
+      "Bash(python -c \"import app; print\\('app.py OK'\\)\")"
     ]
   }
 }

@@ -126,7 +126,7 @@ Rules:
 - Money page URLs must be in the format: https://myhq.in/... (not /blog/)
 - MONEY PAGE LINKS: Place at least one money page link naturally within the first two paragraphs of the content
 - TABLE: If the topic suits a comparison, feature list, or pricing overview, include one HTML <table> with <thead> and <tbody> in the second major H2 section of the blog
-- FAQs: End the blog with an H2 "Frequently Asked Questions" section containing exactly 5 FAQs as <h3> questions with <p> answers. Questions must be specific, high-quality, and directly relevant to the topic — not generic. Answers should be 2-3 short sentences each. FAQ answers must always be <p> paragraphs — never <ul> lists.
+- FAQs: End the blog with an H2 "Frequently Asked Questions" section containing exactly 5 FAQs as <h3> questions with <p> answers. Questions must be specific, high-quality, and directly relevant to the topic — not generic. Each answer must be exactly 40-60 words — this is the Google featured snippet sweet spot. Be concise and direct. FAQ answers must always be <p> paragraphs — never <ul> lists.
 - TL;DR: The tl_dr field must contain exactly 5 crisp, standalone insight sentences summarising the blog's most valuable takeaways. Each must be self-contained and useful without reading the blog.
 - QUICK RECAP: After the closing paragraph of EACH major H2 section (every H2 except the FAQ H2), insert exactly: <div class="quick-recap"><strong>Quick Recap:</strong> [one punchy sentence capturing that section's key point]</div>
 - SCHEMA: The schema_markup field must be a valid JSON object serialised as a string (no <script> tags). Include @context, @type: Article, headline, description, author.name: myHQ Team, publisher.name: myHQ, and a keywords array of the focus + subsidiary keywords.
@@ -135,7 +135,11 @@ Rules:
 - WRITING STYLE — STRICT: Use short, punchy sentences (max 15 words each). One idea per sentence — never join two ideas with "and" or "but". Paragraphs must be 2-3 sentences maximum — never longer. Avoid run-on sentences and compound clauses entirely. Write like a fast-moving blog, not an essay.
 - BULLET POINTS: Wherever content lists 3 or more items, features, benefits, tips, or steps — use a <ul> list instead of cramming them into a sentence or paragraph. Lists make content scannable and improve engagement.
 - LLM VISIBILITY (optimise for ChatGPT / Perplexity / Gemini retrieval): Write in clear, quotable statements that AI models can extract verbatim. Use direct action verbs ("find", "use", "avoid", "choose"). Every H2 section must open with a direct answer sentence before elaborating. Structure content so a standalone paragraph answers a real user question on its own.
-- AVOID AI TELLS — never use: "In today's world", "It's worth noting", "In conclusion", "As we've explored", "Delve into", "It is important to note", "Navigating the", "Game-changer", "Leverage", "Unlock", "Comprehensive". Write like an informed human journalist, not a language model."""
+- AVOID AI TELLS — never use: "In today's world", "It's worth noting", "In conclusion", "As we've explored", "Delve into", "It is important to note", "Navigating the", "Game-changer", "Leverage", "Unlock", "Comprehensive". Write like an informed human journalist, not a language model.
+- DIRECT ANSWER OPENINGS: Every H2 section MUST open with a single direct-answer sentence that completely answers the section's implied question on its own. This sentence should be extractable by AI search engines (Perplexity, ChatGPT, Gemini) as a standalone answer. Then elaborate in the following sentences.""" + ("" if compact else """
+- DEFINITION BLOCK: Immediately after the intro paragraphs and BEFORE the first <h2>, insert a definition block: <div class="definition-box" style="background:#f0f7f0;border-left:4px solid #2d8a4e;border-radius:4px;padding:16px 20px;margin:24px 0;color:#1a1a2e;"><strong>What is [core topic]?</strong> [40-60 word clear, quotable definition targeting Google's definition featured snippet]</div>
+- E-E-A-T CREDIBILITY: Reference real, named companies, products, and places (e.g. "WeWork, Regus, myHQ" not "leading providers"). Use concrete specifics (e.g. "a 10-person startup" not "teams"). Do NOT invent statistics, percentages, or survey results. If citing a well-known industry fact, attribute it vaguely ("according to industry reports") rather than fabricating a source. Never make up numbers.
+- TITLE FORMULA: Pick the title pattern that best fits the topic from these proven formats: (1) Numbered: "7 Best [Topic] for [Audience] in 2025" (2) How-to: "How to [Goal] Without [Objection]" (3) Question: "What Is [Topic]? Complete Guide for [Audience]" (4) Power word: "[Power Word] Guide to [Topic]". Do NOT default to the same format every time — vary based on search intent.""")
 
 
 _MAX_RETRIES = 4
@@ -257,6 +261,132 @@ def _fix_result(result):
             result["url_slug"] = kw_slug
 
     return result
+
+
+def seo_quality_score(result: dict, requested_internal: int, requested_money: int,
+                      target_density: float = 1.5, target_word_count: int = 1200) -> dict:
+    """
+    Score generated blog output against 12 SEO quality checks.
+    Returns {"score": int, "max": 12, "checks": [{"name": str, "passed": bool, "detail": str}]}.
+    """
+    checks = []
+    content = result.get("content", "")
+    kw = result.get("focus_keyword", "").strip().lower()
+
+    # Strip HTML for text analysis
+    text = re.sub(r'<[^>]+>', ' ', content)
+    text_lower = text.lower()
+    words = text.split()
+    total_words = len(words)
+
+    # --- 1. Keyword in meta title ---
+    meta_title = result.get("meta_title", "")
+    passed = kw and kw in meta_title.lower()
+    checks.append({"name": "Keyword in meta title", "passed": passed,
+                   "detail": "Present" if passed else "Focus keyword missing from meta title"})
+
+    # --- 2. Keyword in first 100 words ---
+    first_100 = " ".join(words[:100]).lower()
+    passed = kw and kw in first_100
+    checks.append({"name": "Keyword in first 100 words", "passed": passed,
+                   "detail": "Present" if passed else "Focus keyword not found in first 100 words"})
+
+    # --- 3. Keyword in at least one H2 ---
+    h2_tags = re.findall(r'<h2[^>]*>(.*?)</h2>', content, re.DOTALL | re.IGNORECASE)
+    h2_texts = [re.sub(r'<[^>]+>', '', h).lower() for h in h2_tags]
+    passed = kw and any(kw in h for h in h2_texts)
+    checks.append({"name": "Keyword in H2 heading", "passed": passed,
+                   "detail": f"Found in {sum(1 for h in h2_texts if kw in h)}/{len(h2_texts)} H2s" if passed
+                   else "Focus keyword not found in any H2 heading"})
+
+    # --- 4. Keyword in last section (conclusion) ---
+    if h2_tags:
+        last_h2_pos = content.rfind("<h2")
+        conclusion_text = re.sub(r'<[^>]+>', ' ', content[last_h2_pos:]).lower() if last_h2_pos != -1 else ""
+        passed = kw and kw in conclusion_text
+    else:
+        passed = False
+    checks.append({"name": "Keyword in conclusion", "passed": passed,
+                   "detail": "Present in final section" if passed else "Focus keyword missing from conclusion"})
+
+    # --- 5. Meta title length ---
+    mt_len = len(meta_title)
+    passed = 50 <= mt_len <= 60
+    checks.append({"name": "Meta title length", "passed": passed,
+                   "detail": f"{mt_len} chars (target: 50-60)"})
+
+    # --- 6. Meta description length ---
+    meta_desc = result.get("meta_description", "")
+    md_len = len(meta_desc)
+    passed = 150 <= md_len <= 160
+    checks.append({"name": "Meta description length", "passed": passed,
+                   "detail": f"{md_len} chars (target: 150-160)"})
+
+    # --- 7. FAQ section with 5 questions ---
+    faq_h2_match = re.search(r'<h2[^>]*>.*?Frequently Asked Questions.*?</h2>', content,
+                             re.DOTALL | re.IGNORECASE)
+    if faq_h2_match:
+        faq_section = content[faq_h2_match.start():]
+        faq_questions = re.findall(r'<h3[^>]*>(.*?)</h3>', faq_section, re.DOTALL)
+        faq_count = len(faq_questions)
+    else:
+        faq_count = 0
+    passed = faq_count == 5
+    checks.append({"name": "FAQ section (5 questions)", "passed": passed,
+                   "detail": f"{faq_count}/5 FAQ questions found"})
+
+    # --- 8. FAQ answer length (40-60 words each) ---
+    if faq_h2_match and faq_count > 0:
+        faq_answers = re.findall(r'<h3[^>]*>.*?</h3>\s*<p[^>]*>(.*?)</p>', faq_section,
+                                 re.DOTALL | re.IGNORECASE)
+        good_answers = 0
+        answer_details = []
+        for i, ans in enumerate(faq_answers):
+            ans_text = re.sub(r'<[^>]+>', '', ans).strip()
+            wc = len(ans_text.split())
+            in_range = 30 <= wc <= 70  # generous range — prompt targets 40-60
+            if in_range:
+                good_answers += 1
+            answer_details.append(f"Q{i+1}: {wc}w")
+        passed = good_answers >= 3  # at least 3 of 5 in range
+        checks.append({"name": "FAQ answer length (40-60w)", "passed": passed,
+                       "detail": "; ".join(answer_details) if answer_details else "No FAQ answers found"})
+    else:
+        checks.append({"name": "FAQ answer length (40-60w)", "passed": False,
+                       "detail": "No FAQ section found"})
+
+    # --- 9. Keyword density ---
+    if kw and total_words > 0:
+        kw_count = text_lower.count(kw)
+        actual_density = (kw_count * len(kw.split()) / total_words) * 100
+        diff = abs(actual_density - target_density)
+        passed = diff <= 0.8  # within 0.8% of target
+        checks.append({"name": "Keyword density", "passed": passed,
+                       "detail": f"{actual_density:.1f}% (target: {target_density}%, keyword appears {kw_count}x)"})
+    else:
+        checks.append({"name": "Keyword density", "passed": False,
+                       "detail": "Cannot calculate — no keyword or no content"})
+
+    # --- 10. Internal blog links count ---
+    internal_links = re.findall(r'href=["\']https?://myhq\.in/blog/', content, re.IGNORECASE)
+    passed = len(internal_links) >= requested_internal
+    checks.append({"name": "Internal blog links", "passed": passed,
+                   "detail": f"{len(internal_links)}/{requested_internal} internal blog links"})
+
+    # --- 11. Money page links count ---
+    all_myhq_links = re.findall(r'href=["\'](https?://myhq\.in/[^"\']*)', content, re.IGNORECASE)
+    money_links = [u for u in all_myhq_links if '/blog/' not in u]
+    passed = len(money_links) >= requested_money
+    checks.append({"name": "Money page links", "passed": passed,
+                   "detail": f"{len(money_links)}/{requested_money} money page links"})
+
+    # --- 12. Definition block present ---
+    passed = 'definition-box' in content
+    checks.append({"name": "Definition block", "passed": passed,
+                   "detail": "Present" if passed else "No definition block found in content"})
+
+    score = sum(1 for c in checks if c["passed"])
+    return {"score": score, "max": len(checks), "checks": checks}
 
 
 def generate_blog_groq(client, topic, word_count, keyword_density, n_internal, n_money,

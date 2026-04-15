@@ -39,8 +39,8 @@ def _parse_html_to_doc(doc: Document, html: str):
     Simple HTML → docx parser. Handles h2, h3, p, ul/li, a tags.
     Strips remaining tags and writes plain paragraphs.
     """
-    # Split on block-level tags (including tables)
-    blocks = re.split(r'(<h[23][^>]*>.*?</h[23]>|<p[^>]*>.*?</p>|<ul[^>]*>.*?</ul>|<table[^>]*>.*?</table>)', html, flags=re.DOTALL)
+    # Split on block-level tags (including tables and styled divs)
+    blocks = re.split(r'(<h[23][^>]*>.*?</h[23]>|<p[^>]*>.*?</p>|<ul[^>]*>.*?</ul>|<table[^>]*>.*?</table>|<div[^>]*>.*?</div>)', html, flags=re.DOTALL)
 
     for block in blocks:
         block = block.strip()
@@ -93,6 +93,31 @@ def _parse_html_to_doc(doc: Document, html: str):
                     text = re.sub(r'<[^>]+>', '', part)
                     if text.strip():
                         para.add_run(text)
+            continue
+
+        # Definition box (styled div)
+        m = re.match(r'<div[^>]*class="definition-box"[^>]*>(.*?)</div>', block, re.DOTALL)
+        if m:
+            text = re.sub(r'<[^>]+>', '', m.group(1)).strip()
+            if text:
+                para = doc.add_paragraph()
+                para.paragraph_format.left_indent = Inches(0.3)
+                run = para.add_run(text)
+                run.font.size = Pt(11)
+                run.font.italic = True
+                run.font.color.rgb = RGBColor(0x1a, 0x1a, 0x2e)
+            continue
+
+        # Quick-recap / other styled divs
+        m = re.match(r'<div[^>]*>(.*?)</div>', block, re.DOTALL)
+        if m:
+            text = re.sub(r'<[^>]+>', '', m.group(1)).strip()
+            if text:
+                para = doc.add_paragraph()
+                para.paragraph_format.left_indent = Inches(0.3)
+                run = para.add_run(text)
+                run.font.size = Pt(10)
+                run.font.italic = True
             continue
 
         # Table
