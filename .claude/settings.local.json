@@ -7,7 +7,13 @@
       "Bash(npx skillfish:*)",
       "Bash(python -c \"import generator; print\\('generator.py OK'\\)\")",
       "Bash(python -c \"import docx_exporter; print\\('docx_exporter.py OK'\\)\")",
-      "Bash(python -c \"import app; print\\('app.py OK'\\)\")"
+      "Bash(python -c \"import app; print\\('app.py OK'\\)\")",
+      "WebFetch(domain:skill.sh)",
+      "WebSearch",
+      "WebFetch(domain:park.io)",
+      "WebFetch(domain:docs.ahrefs.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(curl -s \"https://raw.githubusercontent.com/blader/humanizer/main/SKILL.md\")"
     ]
   }
 }
