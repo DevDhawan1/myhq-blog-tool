@@ -131,6 +131,9 @@ celerybeat.pid
 .env
 .env.*
 
+# Google credentials
+google_credentials.json
+
 # Streamlit secrets (local dev only)
 .streamlit/secrets.toml
 
