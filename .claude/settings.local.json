@@ -13,7 +13,18 @@
       "WebFetch(domain:park.io)",
       "WebFetch(domain:docs.ahrefs.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "Bash(curl -s \"https://raw.githubusercontent.com/blader/humanizer/main/SKILL.md\")"
+      "Bash(curl -s \"https://raw.githubusercontent.com/blader/humanizer/main/SKILL.md\")",
+      "Bash(git filter-branch *)",
+      "Bash(git stash *)",
+      "Bash(FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch --force --index-filter \"git rm --cached --ignore-unmatch google_credentials.json.json\" --prune-empty --tag-name-filter cat -- --all)",
+      "Bash(xargs -r git update-ref -d)",
+      "Bash(git reflog *)",
+      "Bash(git gc *)",
+      "Bash(xargs -I{} git update-ref -d {})",
+      "Bash(git push *)",
+      "Bash(git check-ignore *)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
     ]
   }
 }
