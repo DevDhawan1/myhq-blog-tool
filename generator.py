@@ -15,10 +15,9 @@ def setup_groq(api_key: str):
 
 
 def _build_prompt(topic, word_count, keyword_density, n_internal, n_money, context,
-                  override_money_pages=None, compact=False):
-    # compact=True trims context sections to fit Groq's free-tier 12k TPM limit
+                  override_money_pages=None, compact=False,
+                  research_kb_text="", keyword_data_text=""):
 
-    # ── Tone & style samples ──────────────────────────────────────────────────
     sample_count = 1 if compact else 6
     excerpt_len  = 120 if compact else 400
     tone_samples = "\n\n".join(
@@ -27,7 +26,6 @@ def _build_prompt(topic, word_count, keyword_density, n_internal, n_money, conte
         if b.get("content_preview")
     )
 
-    # ── Real meta title / description examples ────────────────────────────────
     meta_limit = 3 if compact else 12
     meta_examples_text = "\n".join(
         f"  Meta title : {e['meta_title']}\n"
@@ -36,7 +34,6 @@ def _build_prompt(topic, word_count, keyword_density, n_internal, n_money, conte
         for e in context.get("meta_examples", [])[:meta_limit]
     )
 
-    # ── Internal blog link pool ───────────────────────────────────────────────
     internal_limit = 10 if compact else len(context["blogs"])
     internal_pool = "\n".join(
         f"- {b['title']}  →  {b['url']}"
@@ -44,7 +41,6 @@ def _build_prompt(topic, word_count, keyword_density, n_internal, n_money, conte
         if b.get("url") and b.get("title")
     )
 
-    # ── Money pages pool ──────────────────────────────────────────────────────
     money_limit = 8 if compact else 25
     mp_list = override_money_pages if override_money_pages else context["money_pages"][:money_limit]
     money_pool = "\n".join(
@@ -52,11 +48,29 @@ def _build_prompt(topic, word_count, keyword_density, n_internal, n_money, conte
         for mp in mp_list
     )
 
-    # ── Existing titles (avoid duplication) ───────────────────────────────────
     titles_limit = 8 if compact else len(context["blogs"])
     existing_titles = "\n".join(
         f"- {b['title']}" for b in context["blogs"][:titles_limit] if b.get("title")
     )
+
+    # Optional sections
+    research_section = ""
+    if research_kb_text:
+        research_section = f"""
+══════════════════════════════════════════
+RESEARCH KNOWLEDGE BASE  (use facts from these sources — cite them naturally)
+══════════════════════════════════════════
+{research_kb_text}
+"""
+
+    keyword_section = ""
+    if keyword_data_text:
+        keyword_section = f"""
+══════════════════════════════════════════
+KEYWORD RESEARCH  (Ahrefs data — follow these exactly)
+══════════════════════════════════════════
+{keyword_data_text}
+"""
 
     return f"""You are a senior SEO content writer for myHQ — India's leading marketplace for coworking spaces, virtual offices, and managed office solutions.
 
@@ -69,7 +83,7 @@ TONE & STYLE REFERENCE  (match this writing style exactly)
 REAL META TITLE & DESCRIPTION EXAMPLES  (study these patterns — length, style, CTA, keyword placement)
 ══════════════════════════════════════════
 {meta_examples_text}
-
+{research_section}{keyword_section}
 ══════════════════════════════════════════
 EXISTING BLOG TITLES  (do NOT duplicate any of these)
 ══════════════════════════════════════════
@@ -146,10 +160,13 @@ _MAX_RETRIES = 4
 
 
 def generate_blog(model, topic, word_count, keyword_density, n_internal, n_money,
-                  context, override_money_pages=None):
+                  context, override_money_pages=None,
+                  research_kb_text="", keyword_data_text=""):
     prompt = _build_prompt(
         topic, word_count, keyword_density, n_internal, n_money,
         context, override_money_pages,
+        research_kb_text=research_kb_text,
+        keyword_data_text=keyword_data_text,
     )
 
     generation_config = genai.GenerationConfig(
@@ -159,17 +176,17 @@ def generate_blog(model, topic, word_count, keyword_density, n_internal, n_money
         response_schema={
             "type": "OBJECT",
             "properties": {
-                "meta_title":           {"type": "STRING"},
-                "meta_description":     {"type": "STRING"},
-                "focus_keyword":        {"type": "STRING"},
-                "subsidiary_keywords":  {"type": "ARRAY", "items": {"type": "STRING"}},
-                "url_slug":             {"type": "STRING"},
-                "blog_title":           {"type": "STRING"},
-                "image_prompt":         {"type": "STRING"},
+                "meta_title":          {"type": "STRING"},
+                "meta_description":    {"type": "STRING"},
+                "focus_keyword":       {"type": "STRING"},
+                "subsidiary_keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "url_slug":            {"type": "STRING"},
+                "blog_title":          {"type": "STRING"},
+                "image_prompt":        {"type": "STRING"},
                 "tl_dr":               {"type": "ARRAY", "items": {"type": "STRING"}},
-                "schema_markup":        {"type": "STRING"},
-                "wp_categories":        {"type": "ARRAY", "items": {"type": "STRING"}},
-                "content":              {"type": "STRING"},
+                "schema_markup":       {"type": "STRING"},
+                "wp_categories":       {"type": "ARRAY", "items": {"type": "STRING"}},
+                "content":             {"type": "STRING"},
             },
             "required": [
                 "meta_title", "meta_description", "focus_keyword",
@@ -190,9 +207,7 @@ def generate_blog(model, topic, word_count, keyword_density, n_internal, n_money
             is_rate_limit = "429" in err_str or "quota" in err_str.lower() or "ResourceExhausted" in type(e).__name__
             if not is_rate_limit:
                 raise
-            # Daily quota is exhausted — retrying won't help
             if "PerDay" in err_str or "per_day" in err_str.lower():
-                # Extract model and quota_value from the raw error for a precise message
                 model_m = re.search(r'value:\s*"([^"]+)"', err_str)
                 quota_m = re.search(r'quota_value:\s*(\d+)', err_str)
                 model_str = model_m.group(1) if model_m else "this model"
@@ -204,50 +219,24 @@ def generate_blog(model, topic, word_count, keyword_density, n_internal, n_money
                 ) from e
             if attempt == _MAX_RETRIES - 1:
                 raise
-            # Per-minute rate limit — wait and retry
             m = re.search(r'retry_delay\s*\{\s*seconds:\s*(\d+)', err_str)
             wait = int(m.group(1)) + 3 if m else 65
-            print(f"[generator] Rate limit hit — waiting {wait}s before retry {attempt + 1}/{_MAX_RETRIES - 1}...")
+            print(f"[generator] Rate limit — waiting {wait}s before retry {attempt + 1}/{_MAX_RETRIES - 1}…")
             time.sleep(wait)
     else:
         raise last_exc
 
     result = json.loads(response.text)
-
-    # ── Post-generation validation & hard fixes ───────────────────────────────
-    kw   = result.get("focus_keyword", "").strip()
-    desc = result.get("meta_description", "").strip()
-    slug = result.get("url_slug", "").strip()
-
-    # 1. Force focus keyword into meta description if missing
-    if kw and kw.lower() not in desc.lower():
-        prefix = kw + ": "
-        available = 157 - len(prefix)          # leave 3 for "..."
-        if available >= 20:
-            # Trim existing desc to fit after the prefix
-            trimmed = desc[:available].rsplit(" ", 1)[0]  # break on word boundary
-            result["meta_description"] = prefix + trimmed + "..."
-        else:
-            # Focus keyword itself is very long — just use it as the description seed
-            result["meta_description"] = (prefix + desc)[:160]
-
-    # 2. Force focus keyword words into URL slug if missing
-    if kw:
-        kw_slug = kw.lower().replace(" ", "-")
-        if kw_slug not in slug:
-            result["url_slug"] = kw_slug
-
-    return result
+    return _fix_result(result)
 
 
 def _fix_result(result):
-    """Post-generation validation shared across providers."""
     kw   = result.get("focus_keyword", "").strip()
     desc = result.get("meta_description", "").strip()
     slug = result.get("url_slug", "").strip()
 
     if kw and kw.lower() not in desc.lower():
-        prefix = kw + ": "
+        prefix    = kw + ": "
         available = 157 - len(prefix)
         if available >= 20:
             trimmed = desc[:available].rsplit(" ", 1)[0]
@@ -266,136 +255,92 @@ def _fix_result(result):
 def seo_quality_score(result: dict, requested_internal: int, requested_money: int,
                       target_density: float = 1.5, target_word_count: int = 1200) -> dict:
     """
-    Score generated blog output against 12 SEO quality checks.
-    Returns {"score": int, "max": 12, "checks": [{"name": str, "passed": bool, "detail": str}]}.
+    Rank Math-inspired 10-check SEO score out of 100. Target: ≥ 70 to pass.
+    Each check is worth 10 points.
     """
-    checks = []
     content = result.get("content", "")
-    kw = result.get("focus_keyword", "").strip().lower()
+    kw      = result.get("focus_keyword", "").strip().lower()
 
-    # Strip HTML for text analysis
-    text = re.sub(r'<[^>]+>', ' ', content)
+    text       = re.sub(r"<[^>]+>", " ", content)
     text_lower = text.lower()
-    words = text.split()
-    total_words = len(words)
+    words      = text.split()
+    word_count = len(words)
 
-    # --- 1. Keyword in meta title ---
+    checks = []
+
+    # 1. Focus keyword in SEO title
     meta_title = result.get("meta_title", "")
-    passed = kw and kw in meta_title.lower()
-    checks.append({"name": "Keyword in meta title", "passed": passed,
-                   "detail": "Present" if passed else "Focus keyword missing from meta title"})
+    p = bool(kw and kw in meta_title.lower())
+    checks.append({"name": "Keyword in SEO title", "passed": p, "points": 10,
+                   "detail": "Present" if p else "Missing from meta title"})
 
-    # --- 2. Keyword in first 100 words ---
-    first_100 = " ".join(words[:100]).lower()
-    passed = kw and kw in first_100
-    checks.append({"name": "Keyword in first 100 words", "passed": passed,
-                   "detail": "Present" if passed else "Focus keyword not found in first 100 words"})
-
-    # --- 3. Keyword in at least one H2 ---
-    h2_tags = re.findall(r'<h2[^>]*>(.*?)</h2>', content, re.DOTALL | re.IGNORECASE)
-    h2_texts = [re.sub(r'<[^>]+>', '', h).lower() for h in h2_tags]
-    passed = kw and any(kw in h for h in h2_texts)
-    checks.append({"name": "Keyword in H2 heading", "passed": passed,
-                   "detail": f"Found in {sum(1 for h in h2_texts if kw in h)}/{len(h2_texts)} H2s" if passed
-                   else "Focus keyword not found in any H2 heading"})
-
-    # --- 4. Keyword in last section (conclusion) ---
-    if h2_tags:
-        last_h2_pos = content.rfind("<h2")
-        conclusion_text = re.sub(r'<[^>]+>', ' ', content[last_h2_pos:]).lower() if last_h2_pos != -1 else ""
-        passed = kw and kw in conclusion_text
-    else:
-        passed = False
-    checks.append({"name": "Keyword in conclusion", "passed": passed,
-                   "detail": "Present in final section" if passed else "Focus keyword missing from conclusion"})
-
-    # --- 5. Meta title length ---
-    mt_len = len(meta_title)
-    passed = 50 <= mt_len <= 60
-    checks.append({"name": "Meta title length", "passed": passed,
-                   "detail": f"{mt_len} chars (target: 50-60)"})
-
-    # --- 6. Meta description length ---
+    # 2. Focus keyword in meta description (exact phrase)
     meta_desc = result.get("meta_description", "")
-    md_len = len(meta_desc)
-    passed = 150 <= md_len <= 160
-    checks.append({"name": "Meta description length", "passed": passed,
-                   "detail": f"{md_len} chars (target: 150-160)"})
+    p = bool(kw and kw in meta_desc.lower())
+    checks.append({"name": "Keyword in meta description", "passed": p, "points": 10,
+                   "detail": f"{len(meta_desc)} chars" if p else f"Missing — {len(meta_desc)} chars"})
 
-    # --- 7. FAQ section with 5 questions ---
-    faq_h2_match = re.search(r'<h2[^>]*>.*?Frequently Asked Questions.*?</h2>', content,
-                             re.DOTALL | re.IGNORECASE)
-    if faq_h2_match:
-        faq_section = content[faq_h2_match.start():]
-        faq_questions = re.findall(r'<h3[^>]*>(.*?)</h3>', faq_section, re.DOTALL)
-        faq_count = len(faq_questions)
-    else:
-        faq_count = 0
-    passed = faq_count == 5
-    checks.append({"name": "FAQ section (5 questions)", "passed": passed,
-                   "detail": f"{faq_count}/5 FAQ questions found"})
+    # 3. Focus keyword in URL slug
+    slug = result.get("url_slug", "").lower()
+    kw_words = kw.split()
+    p = bool(kw_words and all(w in slug for w in kw_words))
+    checks.append({"name": "Keyword in URL slug", "passed": p, "points": 10,
+                   "detail": slug or "—"})
 
-    # --- 8. FAQ answer length (40-60 words each) ---
-    if faq_h2_match and faq_count > 0:
-        faq_answers = re.findall(r'<h3[^>]*>.*?</h3>\s*<p[^>]*>(.*?)</p>', faq_section,
-                                 re.DOTALL | re.IGNORECASE)
-        good_answers = 0
-        answer_details = []
-        for i, ans in enumerate(faq_answers):
-            ans_text = re.sub(r'<[^>]+>', '', ans).strip()
-            wc = len(ans_text.split())
-            in_range = 30 <= wc <= 70  # generous range — prompt targets 40-60
-            if in_range:
-                good_answers += 1
-            answer_details.append(f"Q{i+1}: {wc}w")
-        passed = good_answers >= 3  # at least 3 of 5 in range
-        checks.append({"name": "FAQ answer length (40-60w)", "passed": passed,
-                       "detail": "; ".join(answer_details) if answer_details else "No FAQ answers found"})
-    else:
-        checks.append({"name": "FAQ answer length (40-60w)", "passed": False,
-                       "detail": "No FAQ section found"})
+    # 4. Focus keyword in first 10% of content
+    first_10 = text_lower[: max(len(text_lower) // 10, 200)]
+    p = bool(kw and kw in first_10)
+    checks.append({"name": "Keyword in first 10% of content", "passed": p, "points": 10,
+                   "detail": "Found in opening" if p else "Not in opening section"})
 
-    # --- 9. Keyword density ---
-    if kw and total_words > 0:
-        kw_count = text_lower.count(kw)
-        actual_density = (kw_count * len(kw.split()) / total_words) * 100
-        diff = abs(actual_density - target_density)
-        passed = diff <= 0.8  # within 0.8% of target
-        checks.append({"name": "Keyword density", "passed": passed,
-                       "detail": f"{actual_density:.1f}% (target: {target_density}%, keyword appears {kw_count}x)"})
-    else:
-        checks.append({"name": "Keyword density", "passed": False,
-                       "detail": "Cannot calculate — no keyword or no content"})
+    # 5. Focus keyword in at least one H2 or H3
+    headings = " ".join(re.findall(r"<h[23][^>]*>(.*?)</h[23]>", content, re.IGNORECASE | re.DOTALL)).lower()
+    p = bool(kw and kw in headings)
+    checks.append({"name": "Keyword in a heading (H2/H3)", "passed": p, "points": 10,
+                   "detail": "Found in heading" if p else "Not in any H2/H3"})
 
-    # --- 10. Internal blog links count ---
-    internal_links = re.findall(r'href=["\']https?://myhq\.in/blog/', content, re.IGNORECASE)
-    passed = len(internal_links) >= requested_internal
-    checks.append({"name": "Internal blog links", "passed": passed,
-                   "detail": f"{len(internal_links)}/{requested_internal} internal blog links"})
+    # 6. Keyword appears ≥ 4 times (density > 0 equivalent)
+    kw_count = text_lower.count(kw) if kw else 0
+    p = kw_count >= 4
+    checks.append({"name": "Keyword density (≥4 occurrences)", "passed": p, "points": 10,
+                   "detail": f"{kw_count} occurrences in ~{word_count} words"})
 
-    # --- 11. Money page links count ---
-    all_myhq_links = re.findall(r'href=["\'](https?://myhq\.in/[^"\']*)', content, re.IGNORECASE)
-    money_links = [u for u in all_myhq_links if '/blog/' not in u]
-    passed = len(money_links) >= requested_money
-    checks.append({"name": "Money page links", "passed": passed,
-                   "detail": f"{len(money_links)}/{requested_money} money page links"})
+    # 7. Internal links present
+    internal = len(re.findall(r'href=["\']https?://myhq(?:blog)?\.in/blog/', content, re.IGNORECASE))
+    p = internal >= requested_internal
+    checks.append({"name": "Internal links", "passed": p, "points": 10,
+                   "detail": f"{internal} found (target: {requested_internal})"})
 
-    # --- 12. Definition block present ---
-    passed = 'definition-box' in content
-    checks.append({"name": "Definition block", "passed": passed,
-                   "detail": "Present" if passed else "No definition block found in content"})
+    # 8. External links (non-myhq domains)
+    all_hrefs   = re.findall(r'href=["\']https?://([^/"\']+)', content)
+    ext_links   = [h for h in all_hrefs if "myhq" not in h]
+    p = len(ext_links) >= 1
+    checks.append({"name": "External links", "passed": p, "points": 10,
+                   "detail": f"{len(ext_links)} external link(s)"})
 
-    score = sum(1 for c in checks if c["passed"])
-    return {"score": score, "max": len(checks), "checks": checks}
+    # 9. Content ≥ 1,500 words
+    p = word_count >= 1500
+    checks.append({"name": "Content length ≥ 1,500 words", "passed": p, "points": 10,
+                   "detail": f"~{word_count} words"})
+
+    # 10. FAQ section present
+    p = bool(re.search(r"frequently asked questions", content, re.IGNORECASE))
+    checks.append({"name": "FAQ section present", "passed": p, "points": 10,
+                   "detail": "FAQ found" if p else "No FAQ section"})
+
+    score = sum(c["points"] for c in checks if c["passed"])
+    return {"score": score, "max": 100, "checks": checks, "pass": score >= 70}
 
 
 def generate_blog_groq(client, topic, word_count, keyword_density, n_internal, n_money,
-                       context, override_money_pages=None, model_name="llama-3.3-70b-versatile"):
-    # Cap word count to keep output tokens within Groq free-tier TPM budget
+                       context, override_money_pages=None, model_name="llama-3.3-70b-versatile",
+                       research_kb_text="", keyword_data_text=""):
     groq_word_count = min(word_count, 900)
     prompt = _build_prompt(
         topic, groq_word_count, keyword_density, n_internal, n_money,
         context, override_money_pages, compact=True,
+        research_kb_text=research_kb_text,
+        keyword_data_text=keyword_data_text,
     )
 
     response = client.chat.completions.create(

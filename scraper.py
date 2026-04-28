@@ -3,203 +3,219 @@ from bs4 import BeautifulSoup
 import json
 import os
 import re
-from urllib.parse import urlparse
-from collections import Counter
-from datetime import datetime
 import time
+from datetime import datetime
 
-BLOG_BASE   = "https://myhqblog.in"
-MYHQ_BASE   = "https://myhq.in"
-BLOG_PREFIX = "/blog/"
-CACHE_FILE  = "context_cache.json"
-MAX_BLOGS   = 1000  # hard ceiling; raise if needed
+BLOG_BASE  = "https://myhqblog.in"
+MYHQ_BASE  = "https://myhq.in"
+CACHE_FILE = "context_cache.json"
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+# Category IDs on myhqblog.in
+CATEGORY_IDS = {
+    "Virtual Office": 207363,
+    "Office Space":   207371,
+    "Meeting Room":   207411,
+    "Business Hubs":  207392,
 }
 
-SITEMAP_URL = f"{BLOG_BASE}/sitemap-1.xml"
-BLOG_URL_PREFIX = f"{BLOG_BASE}{BLOG_PREFIX}"  # https://myhqblog.in/blog/
+# Static money pages by product line — covers VO, coworking, managed office, bare shell
+MONEY_PAGES = [
+    # Virtual Office
+    {"url": "https://myhq.in/virtual-office",                   "anchor_texts": ["virtual office", "virtual office services"],            "link_count": 50},
+    {"url": "https://myhq.in/virtual-office/bangalore",         "anchor_texts": ["virtual office in Bangalore", "Bangalore virtual office"], "link_count": 40},
+    {"url": "https://myhq.in/virtual-office/mumbai",            "anchor_texts": ["virtual office in Mumbai"],                              "link_count": 35},
+    {"url": "https://myhq.in/virtual-office/delhi",             "anchor_texts": ["virtual office in Delhi"],                               "link_count": 30},
+    {"url": "https://myhq.in/virtual-office/hyderabad",         "anchor_texts": ["virtual office in Hyderabad"],                           "link_count": 25},
+    {"url": "https://myhq.in/virtual-office/pune",              "anchor_texts": ["virtual office in Pune"],                                "link_count": 20},
+    {"url": "https://myhq.in/virtual-office/chennai",           "anchor_texts": ["virtual office in Chennai"],                             "link_count": 18},
+    {"url": "https://myhq.in/virtual-office/gurgaon",           "anchor_texts": ["virtual office in Gurgaon"],                             "link_count": 15},
+    {"url": "https://myhq.in/virtual-office/noida",             "anchor_texts": ["virtual office in Noida"],                               "link_count": 12},
+    # Coworking
+    {"url": "https://myhq.in/coworking-spaces",                 "anchor_texts": ["coworking spaces", "coworking space"],                   "link_count": 45},
+    {"url": "https://myhq.in/coworking-spaces/bangalore",       "anchor_texts": ["coworking spaces in Bangalore"],                         "link_count": 38},
+    {"url": "https://myhq.in/coworking-spaces/mumbai",          "anchor_texts": ["coworking spaces in Mumbai"],                            "link_count": 32},
+    {"url": "https://myhq.in/coworking-spaces/delhi",           "anchor_texts": ["coworking spaces in Delhi"],                             "link_count": 28},
+    {"url": "https://myhq.in/coworking-spaces/hyderabad",       "anchor_texts": ["coworking spaces in Hyderabad"],                         "link_count": 22},
+    {"url": "https://myhq.in/coworking-spaces/pune",            "anchor_texts": ["coworking spaces in Pune"],                              "link_count": 18},
+    {"url": "https://myhq.in/coworking-spaces/gurgaon",         "anchor_texts": ["coworking spaces in Gurgaon"],                           "link_count": 15},
+    {"url": "https://myhq.in/coworking-spaces/chennai",         "anchor_texts": ["coworking spaces in Chennai"],                           "link_count": 14},
+    # Managed Office
+    {"url": "https://myhq.in/managed-office-space",             "anchor_texts": ["managed office space", "managed office"],                "link_count": 30},
+    {"url": "https://myhq.in/managed-office-space/bangalore",   "anchor_texts": ["managed office space in Bangalore"],                     "link_count": 20},
+    {"url": "https://myhq.in/managed-office-space/mumbai",      "anchor_texts": ["managed office in Mumbai"],                              "link_count": 15},
+    {"url": "https://myhq.in/managed-office-space/hyderabad",   "anchor_texts": ["managed office in Hyderabad"],                           "link_count": 12},
+    # Bare Shell / Commercial Leasing
+    {"url": "https://myhq.in/commercial-real-estate",           "anchor_texts": ["commercial real estate", "commercial office space"],     "link_count": 20},
+    {"url": "https://myhq.in/commercial-real-estate/bangalore", "anchor_texts": ["commercial office space in Bangalore"],                  "link_count": 14},
+]
 
 
-# ── Sitemap ───────────────────────────────────────────────────────────────────
+def _clean_html(html: str) -> str:
+    return re.sub(r"<[^>]+>", "", html).strip()
 
-def fetch_sitemap() -> list[str]:
-    """
-    Fetches sitemap-1.xml and returns only URLs that start with
-    https://myhqblog.in/blog/ — nothing else is included.
-    """
-    resp = requests.get(SITEMAP_URL, headers=HEADERS, timeout=15)
+
+# ── WP REST API fetchers ──────────────────────────────────────────────────────
+
+def _fetch_posts_page(site_url: str, page: int, category_id: int | None = None) -> list[dict]:
+    params = {
+        "per_page": 100,
+        "page": page,
+        "_fields": "id,slug,title,link,excerpt,categories",
+        "status": "publish",
+    }
+    if category_id:
+        params["categories"] = category_id
+    resp = requests.get(
+        f"{site_url}/wp-json/wp/v2/posts",
+        params=params,
+        headers=HEADERS,
+        timeout=15,
+    )
+    if resp.status_code in (400, 404):
+        return []
     resp.raise_for_status()
-    soup = BeautifulSoup(resp.content, "lxml-xml")
-
-    urls = []
-    for loc in soup.find_all("loc"):
-        raw = loc.text.strip()
-        # Normalise relative paths to absolute
-        if raw.startswith("/"):
-            raw = BLOG_BASE + raw
-        if raw.startswith(BLOG_URL_PREFIX):
-            urls.append(raw)
-
-    # Deduplicate while preserving order
-    seen: set[str] = set()
-    return [u for u in urls if not (u in seen or seen.add(u))][:MAX_BLOGS]
+    return resp.json() or []
 
 
-# ── Single-page scraper ───────────────────────────────────────────────────────
+def fetch_blogs_via_api(site_url: str = BLOG_BASE, progress_callback=None) -> list[dict]:
+    """Fetch all published posts via WP REST API (paginated)."""
+    posts, page = [], 1
+    while True:
+        if progress_callback:
+            progress_callback(min(page * 0.08, 0.7), f"Fetching posts page {page}…")
+        batch = _fetch_posts_page(site_url, page)
+        if not batch:
+            break
+        posts.extend(batch)
+        page += 1
+        if len(batch) < 100:
+            break
+    return posts
 
-def scrape_blog_post(url: str) -> dict | None:
+
+def fetch_internal_links_for_category(category: str, site_url: str = BLOG_BASE) -> list[dict]:
+    """Fetch recent posts from a WP category for live internal link data at generation time."""
+    cat_id = CATEGORY_IDS.get(category)
+    try:
+        batch = _fetch_posts_page(site_url, 1, category_id=cat_id)
+        return [
+            {
+                "url":   p.get("link", "").replace(BLOG_BASE, MYHQ_BASE).replace("www.myhqblog.in", "myhq.in"),
+                "title": _clean_html(p.get("title", {}).get("rendered", "")),
+                "slug":  p.get("slug", ""),
+            }
+            for p in batch
+            if p.get("slug") and p.get("title")
+        ]
+    except Exception:
+        return []
+
+
+# ── Tone sample scraper (myhq.in/blog/ is accessible) ────────────────────────
+
+def _scrape_tone_sample(url: str) -> str | None:
+    """Fetch a blog post from myhq.in and return its opening content (~600 chars)."""
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.content, "html.parser")
-
-        # ── Meta title ────────────────────────────────────────────────────────
-        meta_title = ""
-        if soup.title:
-            raw_title = soup.title.get_text(strip=True)
-            # strip trailing " | myHQ" or " - myHQ" site suffix
-            meta_title = re.sub(
-                r"\s*[\|\-–]\s*myHQ.*$", "", raw_title, flags=re.IGNORECASE
-            ).strip()
-
-        # ── Meta description ──────────────────────────────────────────────────
-        meta_desc = ""
-        tag = soup.find("meta", attrs={"name": re.compile(r"^description$", re.I)})
-        if tag:
-            meta_desc = tag.get("content", "").strip()
-
-        # ── Meta keywords (not always present, but grab if exists) ────────────
-        meta_keywords = ""
-        tag = soup.find("meta", attrs={"name": re.compile(r"^keywords$", re.I)})
-        if tag:
-            meta_keywords = tag.get("content", "").strip()
-
-        # ── H1 blog title ─────────────────────────────────────────────────────
-        h1_title = ""
-        for sel in ["h1.entry-title", "h1.post-title", ".entry-title", "h1"]:
-            el = soup.select_one(sel)
-            if el:
-                h1_title = el.get_text(strip=True)
-                break
-
-        # ── Slug (last non-empty path segment) ────────────────────────────────
-        parts = [p for p in urlparse(url).path.split("/") if p]
-        slug = parts[-1] if parts else ""
-
-        # ── Content area ──────────────────────────────────────────────────────
-        content_el = None
-        for sel in [".entry-content", ".post-content", "article .content",
-                    "article", ".blog-content", "main"]:
-            content_el = soup.select_one(sel)
-            if content_el:
-                break
+        for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
+            tag.decompose()
+        content_el = (
+            soup.select_one(".entry-content")
+            or soup.select_one(".post-content")
+            or soup.select_one("article")
+            or soup.find("main")
+        )
         if not content_el:
-            content_el = soup.find("body")
-
-        content_text = content_el.get_text(separator=" ", strip=True) if content_el else ""
-
-        # ── Outgoing links from content ───────────────────────────────────────
-        links = []
-        if content_el:
-            for a in content_el.find_all("a", href=True):
-                href = a["href"].strip()
-                # normalise relative hrefs
-                if href.startswith("/"):
-                    href = MYHQ_BASE + href
-                links.append((href, a.get_text(strip=True)))
-
-        return {
-            "url":           url,
-            "slug":          slug,
-            "h1_title":      h1_title,
-            "meta_title":    meta_title,
-            "meta_desc":     meta_desc,
-            "meta_keywords": meta_keywords,
-            "content_preview": content_text[:2500],
-            "links":         links,
-        }
+            return None
+        text = re.sub(r"\s+", " ", content_el.get_text(separator=" ", strip=True))
+        return text[:600]
     except Exception:
         return None
+
+
+def _get_tone_samples(posts: list[dict], count: int = 6) -> list[dict]:
+    """
+    Enrich the first `count` posts with a full content preview by scraping
+    the myhq.in/blog/ URL (accessible even when myhqblog.in is blocked).
+    """
+    enriched = []
+    for post in posts[:count * 2]:                    # try extras in case some fail
+        if len(enriched) >= count:
+            break
+        myhq_url = post.get("url", "")
+        if not myhq_url:
+            continue
+        sample = _scrape_tone_sample(myhq_url)
+        if sample:
+            enriched.append({**post, "content_preview": sample})
+        time.sleep(0.3)
+    return enriched
 
 
 # ── Full context build ────────────────────────────────────────────────────────
 
 def build_context(progress_callback=None):
     """
-    Crawls all blog URLs, extracts content + SEO metadata,
-    detects money pages, and caches everything.
+    Fetch all blog posts via WP REST API, enrich 6 posts with tone samples
+    from myhq.in/blog/, and cache everything to context_cache.json.
     """
-    urls = fetch_sitemap()
-    total = len(urls)
+    if progress_callback:
+        progress_callback(0.0, "Connecting to WordPress REST API…")
 
-    blogs       = []
-    meta_examples = []        # real meta title/desc pairs for AI reference
-    money_counter = Counter()
-    money_anchors: dict = {}
+    raw_posts = fetch_blogs_via_api(progress_callback=progress_callback)
 
-    for i, url in enumerate(urls):
-        if progress_callback:
-            progress_callback(i / total, f"Scraping {i + 1}/{total}: {url}")
+    if progress_callback:
+        progress_callback(0.75, f"Fetched {len(raw_posts)} posts. Scraping tone samples…")
 
-        data = scrape_blog_post(url)
-        if not data:
-            time.sleep(0.3)
-            continue
+    blogs = []
+    for p in raw_posts:
+        title   = _clean_html(p.get("title", {}).get("rendered", ""))
+        excerpt = _clean_html(p.get("excerpt", {}).get("rendered", ""))
+        slug    = p.get("slug", "")
+        link    = p.get("link", "")
+        canonical = link.replace(BLOG_BASE, MYHQ_BASE).replace("www.myhqblog.in", "myhq.in")
 
-        # Store blog entry — convert myhqblog.in scrape URL to myhq.in for internal linking
-        canonical_url = data["url"].replace(BLOG_BASE, MYHQ_BASE)
-        blogs.append({
-            "url":        canonical_url,
-            "slug":       data["slug"],
-            "title":      data["h1_title"] or data["meta_title"],
-            "meta_title": data["meta_title"],
-            "meta_desc":  data["meta_desc"],
-            "content_preview": data["content_preview"],
-        })
-
-        # Collect meta examples for AI reference (first 20 with real meta data)
-        if len(meta_examples) < 20 and data["meta_title"] and data["meta_desc"]:
-            meta_examples.append({
-                "meta_title": data["meta_title"],
-                "meta_desc":  data["meta_desc"],
-                "keywords":   data["meta_keywords"],
+        if title and slug:
+            blogs.append({
+                "url":             canonical,
+                "slug":            slug,
+                "title":           title,
+                "meta_title":      title,
+                "meta_desc":       excerpt[:160],
+                "content_preview": excerpt,   # overwritten below for first 6
             })
 
-        # Money page detection:
-        # Any myhq.in link that is NOT a /blog/ path = money / category page
-        for link_url, anchor in data["links"]:
-            parsed = urlparse(link_url)
-            if "myhq.in" in parsed.netloc and not parsed.path.startswith(BLOG_PREFIX):
-                if parsed.path and parsed.path != "/":
-                    money_counter[link_url] += 1
-                    if link_url not in money_anchors:
-                        money_anchors[link_url] = []
-                    if anchor and len(anchor) > 2 and anchor not in money_anchors[link_url]:
-                        money_anchors[link_url].append(anchor)
+    # Enrich first 6 with real content previews for tone matching
+    tone_enriched = _get_tone_samples(blogs, count=6)
+    tone_map = {b["url"]: b for b in tone_enriched}
+    blogs = [tone_map.get(b["url"], b) for b in blogs]
 
-        time.sleep(0.3)  # polite crawling
+    if progress_callback:
+        progress_callback(0.95, "Building context cache…")
 
-    top_money_pages = [
-        {
-            "url":        url,
-            "link_count": count,
-            "anchor_texts": money_anchors.get(url, [])[:5],
-        }
-        for url, count in money_counter.most_common(50)
+    meta_examples = [
+        {"meta_title": b["meta_title"], "meta_desc": b["meta_desc"], "keywords": ""}
+        for b in blogs[:20]
+        if b.get("meta_title") and b.get("meta_desc")
     ]
 
     context = {
-        "blogs":          blogs,
-        "meta_examples":  meta_examples,
-        "money_pages":    top_money_pages,
-        "scraped_at":     datetime.now().isoformat(),
-        "total_blogs":    len(blogs),
+        "blogs":        blogs,
+        "meta_examples": meta_examples,
+        "money_pages":  MONEY_PAGES,
+        "scraped_at":   datetime.now().isoformat(),
+        "total_blogs":  len(blogs),
     }
 
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(context, f, indent=2, ensure_ascii=False)
+
+    if progress_callback:
+        progress_callback(1.0, f"Done! Indexed {len(blogs)} posts.")
 
     return context
 

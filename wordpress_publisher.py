@@ -244,6 +244,58 @@ def _check_wp_error(response: requests.Response, context: str) -> None:
     raise RuntimeError(f"{context} failed ({status}): [{code}] {message}")
 
 
+def _resolve_tag_ids(base: str, auth: HTTPBasicAuth, tag_names: list[str]) -> list[int]:
+    """Look up tag IDs by name; create any that don't exist. Returns list of IDs."""
+    ids = []
+    tag_url = f"{base}/wp-json/wp/v2/tags"
+    for name in tag_names:
+        name = name.strip()
+        if not name:
+            continue
+        try:
+            resp = requests.get(tag_url, params={"search": name, "per_page": 5}, auth=auth, timeout=10)
+            if resp.ok:
+                matches = [t for t in resp.json() if t["name"].lower() == name.lower()]
+                if matches:
+                    ids.append(matches[0]["id"])
+                    continue
+            resp = requests.post(tag_url, json={"name": name}, auth=auth, timeout=10)
+            if resp.ok:
+                ids.append(resp.json()["id"])
+        except Exception:
+            pass
+    return ids
+
+
+def _set_rankmath_meta(base: str, auth: HTTPBasicAuth, post_id: int,
+                       meta_title: str, meta_description: str,
+                       focus_keyword: str, canonical_url: str = "") -> str | None:
+    """
+    Call the dedicated Rank Math REST endpoint to write SEO meta.
+    Returns a warning string on failure, None on success.
+    """
+    meta = {
+        "rank_math_title":         meta_title,
+        "rank_math_description":   meta_description,
+        "rank_math_focus_keyword": focus_keyword,
+    }
+    if canonical_url:
+        meta["rank_math_canonical_url"] = canonical_url
+
+    try:
+        resp = requests.post(
+            f"{base}/wp-json/rankmath/v1/updateMeta",
+            json={"objectType": "post", "objectID": post_id, "meta": meta},
+            auth=auth,
+            timeout=15,
+        )
+        if resp.ok:
+            return None
+        return f"Rank Math API returned {resp.status_code}. SEO meta may need manual entry."
+    except Exception as e:
+        return f"Rank Math API error: {e}"
+
+
 def _resolve_category_ids(base: str, auth: HTTPBasicAuth, category_names: list[str]) -> list[int]:
     """
     Given a list of category name strings, return matching WP category IDs.
@@ -356,6 +408,8 @@ def create_post(
     schema_markup: str = "",
     author_html: str = "",
     category_names: list[str] | None = None,
+    tag_names: list[str] | None = None,
+    canonical_url: str = "",
 ) -> dict:
     """
     Create a WP post via POST /wp-json/wp/v2/posts.
@@ -390,7 +444,7 @@ def create_post(
     # ── Convert HTML → Gutenberg blocks → RankMath FAQ block ─────────────────
     block_content = _convert_faq_to_rankmath(_html_to_gutenberg(content))
 
-    # ── Inject feature image block after 1st paragraph ────────────────────────
+    # ── Inject feature image block before first H2 (after intro paragraphs) ─────
     if featured_media_id:
         src_attr = f' src="{featured_media_url}"' if featured_media_url else ""
         img_block = (
@@ -400,17 +454,27 @@ def create_post(
             f'</figure>\n'
             f'<!-- /wp:image -->'
         )
-        # Try after first paragraph; fall back to after first block of any kind
-        for marker in ("<!-- /wp:paragraph -->", "<!-- /wp:heading -->", "<!-- /wp:html -->"):
-            pos = block_content.find(marker)
-            if pos != -1:
-                insert_pos = pos + len(marker)
-                block_content = (
-                    block_content[:insert_pos]
-                    + "\n\n" + img_block + "\n\n"
-                    + block_content[insert_pos:]
-                )
-                break
+        # Insert just before the first H2 heading block
+        h2_marker = '<!-- wp:heading {"level":2} -->'
+        pos = block_content.find(h2_marker)
+        if pos != -1:
+            block_content = (
+                block_content[:pos]
+                + img_block + "\n\n"
+                + block_content[pos:]
+            )
+        else:
+            # Fallback: after first paragraph block
+            for marker in ("<!-- /wp:paragraph -->", "<!-- /wp:heading -->", "<!-- /wp:html -->"):
+                pos = block_content.find(marker)
+                if pos != -1:
+                    insert_pos = pos + len(marker)
+                    block_content = (
+                        block_content[:insert_pos]
+                        + "\n\n" + img_block + "\n\n"
+                        + block_content[insert_pos:]
+                    )
+                    break
 
     # ── Assemble full content ─────────────────────────────────────────────────
     full_content = block_content
@@ -429,8 +493,9 @@ def create_post(
     if author_html:
         full_content = full_content + "\n\n<!-- wp:html -->\n" + author_html + "\n<!-- /wp:html -->"
 
-    # ── Resolve category IDs ──────────────────────────────────────────────────
+    # ── Resolve category and tag IDs ─────────────────────────────────────────
     cat_ids = _resolve_category_ids(base, auth, category_names or [])
+    tag_ids = _resolve_tag_ids(base, auth, tag_names or [])
 
     # ── Build payload ─────────────────────────────────────────────────────────
     payload = {
@@ -453,6 +518,8 @@ def create_post(
         payload["featured_media"] = featured_media_id
     if cat_ids:
         payload["categories"] = cat_ids
+    if tag_ids:
+        payload["tags"] = tag_ids
 
     resp = requests.post(
         f"{base}/wp-json/wp/v2/posts",
@@ -465,16 +532,20 @@ def create_post(
     data    = resp.json()
     post_id = data["id"]
 
-    # ── Separate PATCH for RankMath SEO meta ─────────────────────────────────
+    # ── Step 1: dedicated Rank Math API ──────────────────────────────────────
+    meta_warning = _set_rankmath_meta(
+        base, auth, post_id, meta_title, meta_description, focus_keyword, canonical_url
+    )
+
+    # ── Step 2: fallback PATCH via WP REST meta fields ────────────────────────
     seo_meta = {
-        "rank_math_title":          meta_title,
-        "rank_math_description":    meta_description,
-        "rank_math_focus_keyword":  focus_keyword,
-        "_yoast_wpseo_title":       meta_title,
-        "_yoast_wpseo_metadesc":    meta_description,
-        "_yoast_wpseo_focuskw":     focus_keyword,
+        "rank_math_title":         meta_title,
+        "rank_math_description":   meta_description,
+        "rank_math_focus_keyword": focus_keyword,
+        "_yoast_wpseo_title":      meta_title,
+        "_yoast_wpseo_metadesc":   meta_description,
+        "_yoast_wpseo_focuskw":    focus_keyword,
     }
-    meta_warning = None
     try:
         meta_resp = requests.post(
             f"{base}/wp-json/wp/v2/posts/{post_id}",
@@ -483,23 +554,20 @@ def create_post(
             timeout=15,
         )
         if meta_resp.ok:
-            # Verify RankMath description was actually written
             written = meta_resp.json().get("meta", {})
-            if written.get("rank_math_description", "") != meta_description:
-                meta_warning = (
-                    "SEO meta fields could not be saved automatically. "
-                    "Add this snippet to your theme's functions.php:\n\n"
-                    "add_action('init', function() {\n"
-                    "    foreach(['rank_math_title','rank_math_description','rank_math_focus_keyword'] as $k) {\n"
-                    "        register_post_meta('post', $k, ['show_in_rest'=>true,'single'=>true,'type'=>'string',\n"
-                    "            'auth_callback'=>fn()=>current_user_can('edit_posts')]);\n"
-                    "    }\n"
-                    "});"
-                )
-        else:
-            meta_warning = f"SEO meta PATCH failed ({meta_resp.status_code}). Add the functions.php snippet to enable REST meta writes."
-    except Exception as e:
-        meta_warning = f"SEO meta update error: {e}"
+            if meta_warning and written.get("rank_math_description", "") == meta_description:
+                meta_warning = None   # Rank Math API failed but PATCH worked — clear warning
+        elif meta_warning:
+            meta_warning += (
+                "\n\nWP meta PATCH also failed. To fix, add this to functions.php:\n"
+                "add_action('init', function() {\n"
+                "    foreach(['rank_math_title','rank_math_description','rank_math_focus_keyword'] as $k)\n"
+                "        register_post_meta('post', $k, ['show_in_rest'=>true,'single'=>true,'type'=>'string',\n"
+                "            'auth_callback'=>fn()=>current_user_can('edit_posts')]);\n"
+                "});"
+            )
+    except Exception:
+        pass
 
     return {
         "post_id":      post_id,

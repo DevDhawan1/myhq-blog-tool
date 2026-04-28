@@ -22,11 +22,14 @@ Create a `.env` file in the project root (loaded manually by `app.py` via line-b
 ```
 GEMINI_API_KEY=your_key_here                 # required if using Gemini provider
 GROQ_API_KEY=your_key_here                   # required if using Groq provider (free tier: 14,400 req/day)
+AHREFS_API_KEY=your_key_here                 # optional, Ahrefs API for keyword research
 FREE_IMAGE_API_KEY=your_bearer_token         # bearer token for the Cloudflare Worker image API
 UNSPLASH_ACCESS_KEY=your_key_here            # optional, last-resort image fallback
 WP_SITE_URL=https://myhqblog.in             # optional, WordPress publishing
 WP_USERNAME=your_wp_username                 # optional, WordPress publishing
 WP_APP_PASSWORD=xxxx xxxx xxxx              # optional, WP Application Password
+GOOGLE_CREDENTIALS_FILE=google_credentials.json  # optional, Google Sheets tracker
+TRACKING_SHEET_URL=https://docs.google.com/spreadsheets/d/YOUR_ID/edit  # optional, tracker sheet URL
 ```
 
 All keys can also be entered at runtime via the Streamlit sidebar.
